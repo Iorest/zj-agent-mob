@@ -989,9 +989,110 @@ fn real_permission_asks_are_consumable_by_rust() {
 }
 
 #[test]
-fn the_plugin_path_can_be_overridden() {
+fn the_plugin_is_never_named_on_the_pipe() {
+    // `--plugin` does not mean "send to this plugin"; it means "send to it, and
+    // LAUNCH it when it is not running". A hook fires on every tool call, so
+    // naming the plugin would pop the panel open unasked and contradict
+    // `popup_on_waiting false`. Without the flag Zellij still delivers to every
+    // loaded plugin listening on the pipe name, which is the panel the user
+    // opened and nobody else.
     let r = Hook::new().env("ZJ_AGENT_PLUGIN", "file:/custom.wasm").run(&ev("Stop"));
-    assert_eq!(r.status_pipe().unwrap().plugin, "file:/custom.wasm");
+    let pipe = r.status_pipe().expect("a status pipe");
+    assert_eq!(
+        pipe.plugin, "",
+        "passing --plugin would launch the panel when it is not running"
+    );
+    assert_eq!(pipe.name, "agent-status", "the pipe must still be named");
+    assert_eq!(r.field("status"), "done", "the status must still be carried");
+}
+
+/// A permission prompt parks an `ask` the panel answers by writing a file. The
+/// path travels in `--args`, which is comma-delimited with no escape, so a
+/// display-length clamp would cut the tail off and the panel would write a path
+/// nobody reads - the approval then always times out. `same_pane_in_two_sessions`
+/// checks that two sessions get two files; this checks that one file keeps its
+/// whole name.
+#[test]
+fn a_verdict_path_keeps_its_final_component() {
+    let r = Hook::new()
+        .env("ZJ_AGENT_APPROVE", "1")
+        .env("ZJ_AGENT_APPROVE_TIMEOUT", "1")
+        .env("ZELLIJ_SESSION_NAME", "parity")
+        .run(&permission_request());
+    let asked = r.ask_pipe().expect("a permission request parks an ask");
+    let path = asked.args.get("verdict_file").expect("no verdict_file in the ask");
+    // The hook polls exactly this name; losing the tail is what made every
+    // approval time out. `parity` sanitizes to itself, so this is the literal
+    // file the hook will look for.
+    assert!(
+        path.ends_with("verdict.parity.3"),
+        "verdict path lost its final component: {path}"
+    );
+    assert!(path.starts_with('/'), "verdict path must be absolute: {path}");
+    assert!(
+        !path.contains(','),
+        "a comma would split the comma-delimited args: {path}"
+    );
+}
+
+/// The idle prompt key is not stable across agent builds. A hook that only knows
+/// `notification_type` reports `waiting` for every build that names it something
+/// else, so the panel never shows the one state it exists for.
+#[test]
+fn an_idle_prompt_is_recognized_under_every_field_name() {
+    for key in ["notification_type", "notificationType", "type", "kind"] {
+        let json = serde_json::json!({
+            "hook_event_name": "Notification",
+            key: "idle_prompt",
+            "message": "waiting for input",
+        })
+        .to_string();
+        let r = run(&json);
+        assert_eq!(r.field("status"), "idlewait", "status under `{key}`");
+        assert_eq!(r.field("block"), "idle", "block under `{key}`");
+    }
+}
+
+/// `NotebookEdit` carries `notebook_path`, not `file_path`. Without it the row
+/// shows a bare tool name while every other tool shows what it is touching.
+#[test]
+fn a_notebook_edit_reports_its_notebook() {
+    let json = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "NotebookEdit",
+        "tool_input": {"notebook_path": "/work/analysis.ipynb"},
+    })
+    .to_string();
+    assert_eq!(run(&json).field("detail"), "NotebookEdit /work/analysis.ipynb");
+}
+
+/// A tool call that never finishes leaves its start stamp behind. `SessionEnd`
+/// is the last chance to clear it; nothing else prunes that file.
+#[test]
+fn session_end_clears_an_abandoned_inflight_stamp() {
+    let h = Hook::new();
+    let started = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "sleep 100"},
+        "tool_use_id": "toolu_abandoned",
+    })
+    .to_string();
+    h.env("ZELLIJ_SESSION_NAME", "mob").run(&started);
+    assert!(
+        h.path("spool/inflight.mob.3").exists(),
+        "the stamp is what the duration is measured against"
+    );
+
+    // No matching PostToolUse ever arrives, which is what an interrupted or
+    // cancelled tool call looks like.
+    let ended = serde_json::json!({"hook_event_name": "SessionEnd"}).to_string();
+    h.env("ZELLIJ_SESSION_NAME", "mob").run(&ended);
+    assert!(
+        !h.path("spool/inflight.mob.3").exists(),
+        "an abandoned tool stamp outlived the session"
+    );
+    assert!(!h.path("spool/mob.3").exists(), "the record must go with it");
 }
 
 // ---------------------------------------------------------------------------

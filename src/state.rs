@@ -8,35 +8,6 @@ use crate::host;
 use crate::status::Status;
 use crate::{SIGINT_BYTE, SPINNER, STALE_AFTER, TICK};
 
-/// The fixed POSIX launcher used to select a login shell in a command pane.
-pub(crate) const SHELL_SELECTOR: &str = r#"
-selected=${1:-}
-case "$selected" in
-  zsh|bash|sh)
-    command -v "$selected" >/dev/null 2>&1 && exec "$selected" -l ;;
-  /*)
-    [ -x "$selected" ] && exec "$selected" -l ;;
-esac
-for candidate in zsh bash sh; do
-  command -v "$candidate" >/dev/null 2>&1 && exec "$candidate" -l
-done
-printf '%s\n' 'zj-agent-mob: no login shell found' >&2
-exit 127
-"#;
-
-pub(crate) fn shell_command(shell: &str, cwd: Option<String>) -> CommandToRun {
-    CommandToRun {
-        path: "sh".into(),
-        args: vec![
-            "-c".into(),
-            SHELL_SELECTOR.into(),
-            "zj-agent-mob-shell".into(),
-            shell.trim().into(),
-        ],
-        cwd: cwd.map(Into::into),
-    }
-}
-
 pub(crate) struct Ask {
     pub(crate) id: AgentId,
     pub(crate) verdict_file: String,
@@ -936,11 +907,18 @@ impl State {
             .get(self.selected)
             .map(|a| a.cwd.clone())
             .filter(|c| !c.is_empty());
-        let shell = host::get_session_environment_variables()
-            .get("SHELL")
-            .cloned()
-            .unwrap_or_default();
-        host::open_command_pane_floating(shell_command(&shell, cwd), None, BTreeMap::new());
+        host::open_command_pane_floating(
+            CommandToRun {
+                path: "sh".into(),
+                args: vec![
+                    "-lc".into(),
+                    r#"for candidate in "${SHELL:-}" zsh bash sh; do [ -n "$candidate" ] && command -v "$candidate" >/dev/null 2>&1 && exec "$candidate" -l; done"#.into(),
+                ],
+                cwd: cwd.map(Into::into),
+            },
+            None,
+            BTreeMap::new(),
+        );
         self.hidden = true;
         host::hide_self();
         true
@@ -1485,24 +1463,6 @@ mod tests {
             session: "mob".into(),
             pane_id,
         }
-    }
-
-    #[test]
-    fn shell_command_uses_a_safe_selector_and_login_mode() {
-        let command = shell_command("/bin/zsh", Some("/tmp/project".into()));
-        assert_eq!(command.path.to_string_lossy(), "sh");
-        assert_eq!(command.args[0], "-c");
-        assert_eq!(command.args[2], "zj-agent-mob-shell");
-        assert_eq!(command.args[3], "/bin/zsh");
-        assert!(command.args[1].contains("exec \"$selected\" -l"));
-        assert_eq!(command.cwd.unwrap().to_string_lossy(), "/tmp/project");
-    }
-
-    #[test]
-    fn shell_selector_falls_back_in_order_without_eval() {
-        assert!(SHELL_SELECTOR.contains("for candidate in zsh bash sh"));
-        assert!(SHELL_SELECTOR.contains("command -v \"$candidate\""));
-        assert!(!SHELL_SELECTOR.contains("eval"));
     }
 
     #[test]

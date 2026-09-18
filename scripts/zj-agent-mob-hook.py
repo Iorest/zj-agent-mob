@@ -12,6 +12,10 @@ from typing import Any
 from urllib.parse import quote, unquote_to_bytes
 
 MAX_VALUE_LENGTH = 60
+MAX_PATH_LENGTH = 512
+# `--args` is a `key=value,key=value` list, so a raw path containing a comma
+# would split the record. Percent-encoding carries it losslessly instead; the
+# plugin decodes this marker and treats an unknown one as a malformed record.
 CWD_ENCODING = "uri-v1"
 PIPE_TIMEOUT_SECONDS = 0.5
 FANOUT_DEADLINE_SECONDS = 0.8
@@ -48,6 +52,37 @@ def sanitize_value(value: object, limit: int = MAX_VALUE_LENGTH) -> str:
     return " ".join(text.split())[:limit]
 
 
+def sanitize_path(value: object, limit: int = MAX_PATH_LENGTH) -> str:
+    """Sanitize a filesystem path or identifier without destroying it.
+
+    `,,` separates --args pairs and `=` separates a key from its value, so both
+    are still folded; but a path must not lose its tail. Truncating one turns
+    the verdict file into a path the panel cannot write and the pane's cwd into
+    a directory that does not exist, so the budget here is bytes, not
+    legibility. `=` is kept: it is legal in paths and the plugin splits on the
+    first one only.
+    """
+    text = str(value or "")
+    text = "".join(c if c.isprintable() and c != "," else " " for c in text)
+    return " ".join(text.split())[:limit]
+
+
+def encode_cwd(value: object) -> str:
+    """Percent-encode a working directory for the comma-delimited wire format."""
+    return quote(str(value or ""), safe="")
+
+
+def decode_cwd(value: str) -> str:
+    """Invert `encode_cwd`, rejecting malformed escapes instead of guessing."""
+    for index, char in enumerate(value):
+        if char == "%" and (
+            index + 2 >= len(value)
+            or any(c not in "0123456789abcdefABCDEF" for c in value[index + 1 : index + 3])
+        ):
+            raise ValueError("invalid percent escape")
+    return unquote_to_bytes(value).decode("utf-8", errors="strict")
+
+
 def sanitize_session(value: str) -> str:
     raw = str(value or "").encode("utf-8", "surrogateescape")
     allowed = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"
@@ -64,17 +99,6 @@ def first_value(data: dict[str, Any], *keys: str) -> str:
         if value not in (None, ""):
             return str(value)
     return ""
-
-
-def encode_cwd(value: object) -> str:
-    return quote(str(value or ""), safe="")
-
-
-def decode_cwd(value: str) -> str:
-    for index, char in enumerate(value):
-        if char == "%" and (index + 2 >= len(value) or any(c not in "0123456789abcdefABCDEF" for c in value[index + 1:index + 3])):
-            raise ValueError("invalid percent escape")
-    return unquote_to_bytes(value).decode("utf-8", errors="strict")
 
 
 def agent_tool() -> str:
@@ -154,13 +178,13 @@ def extract_usage(data: dict[str, Any]) -> dict[str, str]:
 
 
 def zellij_context() -> tuple[str, str] | None:
-    if os.environ.get("ZELLIJ") not in (None, "0"):
-        return None
+    # The pane id is what scopes this hook to an agent running inside Zellij:
+    # no pane id means there is nothing to report. ZELLIJ itself is only a
+    # marker and is "0" inside a session, so it must not gate anything.
     pane_id = os.environ.get("ZELLIJ_PANE_ID", "")
-    session = os.environ.get("ZELLIJ_SESSION_NAME", "")
     if not pane_id.isdigit():
         return None
-    return pane_id, session
+    return pane_id, os.environ.get("ZELLIJ_SESSION_NAME", "")
 
 
 def spool_dir() -> Path:
@@ -188,6 +212,7 @@ def read_fields(path: Path) -> dict[str, str]:
         try:
             result["cwd"] = decode_cwd(result["cwd"])
         except (ValueError, UnicodeDecodeError):
+            # A record we cannot decode is not evidence about the agent.
             return {}
     return result
 
@@ -206,30 +231,45 @@ def write_atomic(path: Path, content: str) -> None:
             pass
 
 
-def serialize(fields: dict[str, str], include_empty: bool = False) -> str:
+def serialize(fields: dict[str, str], include_empty: bool = False, paths: frozenset[str] = frozenset()) -> str:
+    """Join fields into a `key=value,key=value` --args string.
+
+    `cwd` is percent-encoded with a `cwd_encoding` marker so a path containing a
+    comma survives the delimited format intact. Keys named in `paths` carry
+    other filesystem paths (`verdict_file`) and are sanitized without the
+    display-length clamp; everything else stays short enough for a row label.
+    """
     output = []
     for key, value in fields.items():
         if key == "cwd":
-            sanitized = encode_cwd(value)
-            if include_empty or sanitized:
+            # Lossless on the wire; `paths` cannot express this, so cwd is
+            # handled before the clamp rather than by it.
+            encoded = encode_cwd(value)
+            if include_empty or encoded:
                 output.append(f"cwd_encoding={CWD_ENCODING}")
-                output.append(f"cwd={sanitized}")
+                output.append(f"cwd={encoded}")
             continue
-        sanitized = sanitize_value(value)
+        sanitized = sanitize_path(value) if key in paths else sanitize_value(value)
         if include_empty or sanitized:
             output.append(f"{key}={sanitized}")
     return ",".join(output)
 
 
+def notification_kind(data: dict[str, Any]) -> str:
+    # The exact key depends on the agent build; a wrong guess silently turns
+    # every idle prompt into `waiting` and the panel never shows "idle-wait".
+    return first_value(data, "notification_type", "notificationType", "type", "kind")
+
+
 def event_status(event: str, data: dict[str, Any]) -> str | None:
     if event == "Notification":
-        kind = first_value(data, "notification_type", "notificationType")
+        kind = notification_kind(data)
         return "idlewait" if kind in {"idle_prompt", "agent_needs_input"} else "waiting"
     return EVENT_STATUS.get(event)
 
 
 def tool_argument(arguments: dict[str, Any]) -> str:
-    return first_value(arguments, "file_path", "command", "pattern", "path", "url", "description")
+    return first_value(arguments, "file_path", "command", "pattern", "path", "url", "description", "notebook_path")
 
 
 def tool_detail(event: str, data: dict[str, Any], tool_name: str, arguments: dict[str, Any]) -> str:
@@ -293,7 +333,7 @@ def task_from_transcript(data: dict[str, Any], tool: str, session_id: str) -> st
 
 def status_fields(event: str, data: dict[str, Any], status: str, pane_id: str, session: str) -> dict[str, str]:
     tool_name, arguments = extract_tool_call(data)
-    kind = first_value(data, "notification_type", "notificationType")
+    kind = notification_kind(data)
     block = ""
     if event == "PermissionRequest":
         block = "plan" if tool_name in {"ExitPlanMode", "exit_plan_mode"} else "tool"
@@ -386,11 +426,23 @@ def send_pipe(
     session: str = "",
     deadline: float | None = None,
     name: str = "agent-status",
+    include_plugin: bool = False,
 ) -> None:
+    """Send one named pipe, without launching the plugin by default.
+
+    `zellij pipe --plugin <url>` means "send to this plugin, launching it if it
+    is not running"; a hook that fires on every tool call would therefore pop
+    the panel open unasked. Without `--plugin` zellij delivers to every loaded
+    plugin listening on the pipe name, which is exactly the panel when the user
+    opened one. `include_plugin` exists for the rare explicit case only.
+    """
     command = ["zellij"]
     if session:
         command.extend(["--session", session])
-    command.extend(["pipe", "--name", name, "--plugin", plugin, "--args", args])
+    command.extend(["pipe", "--name", name])
+    if include_plugin:
+        command.extend(["--plugin", plugin])
+    command.extend(["--args", args])
     timeout = PIPE_TIMEOUT_SECONDS if deadline is None else min(PIPE_TIMEOUT_SECONDS, max(0.01, deadline - time.monotonic()))
     try:
         subprocess.run(command, check=False, capture_output=True, timeout=timeout)
@@ -447,7 +499,13 @@ def peer_context(directory: Path, session: str, cwd: str) -> str:
     shown = peers[:3]
     more = len(peers) - len(shown)
     suffix = f" (and {more} more)" if more else ""
-    return f"zj-agent-mob: {len(peers)} other agent(s) are working in this same directory right now:\n{'\n'.join(shown)}\nCoordinate before wide-reaching changes (rebases, file moves, dependency bumps).{suffix}"
+    newline = chr(10)
+    listed = newline.join(shown)
+    return (
+        f"zj-agent-mob: {len(peers)} other agent(s) are working in this same directory right now:"
+        f"{newline}{listed}{newline}"
+        f"Coordinate before wide-reaching changes (rebases, file moves, dependency bumps).{suffix}"
+    )
 
 
 def hook_output(event: str, body: dict[str, Any]) -> None:
@@ -476,7 +534,10 @@ def permission_response(event: str, data: dict[str, Any], pane_id: str, session:
     if tool_name and rules_file.is_file():
         try:
             for line in rules_file.read_text(encoding="utf-8").splitlines():
-                parts = line.strip().split(" ", 2)
+                rule = line.strip()
+                if not rule or rule.startswith("#"):
+                    continue
+                parts = rule.split(" ", 2)
                 if len(parts) >= 2 and parts[0] == "allow" and parts[1] == tool_name and (len(parts) == 2 or tool_arg.startswith(parts[2])):
                     hook_output(event, {"decision": "allow"})
                     return
@@ -494,7 +555,13 @@ def permission_response(event: str, data: dict[str, Any], pane_id: str, session:
         timeout = max(0, int(timeout_raw))
     except ValueError:
         timeout = 30
-    args = serialize({"pane_id": pane_id, "session": sanitize_session(session), "verdict_file": str(verdict), "tool_name": tool_name, "tool_arg": tool_arg, "timeout": str(timeout)}, True)
+    args = serialize(
+        {"pane_id": pane_id, "session": sanitize_session(session), "verdict_file": str(verdict), "tool_name": tool_name, "tool_arg": tool_arg, "timeout": str(timeout)},
+        True,
+        # The panel writes this exact path: a clamped one is unwritable and the
+        # approval silently times out.
+        paths=frozenset({"verdict_file"}),
+    )
     send_pipe(args, plugin, name="agent-ask")
     fanout(args, directory, session, plugin)
     for _ in range(timeout):
@@ -521,6 +588,9 @@ def process_event(event: str, data: dict[str, Any], pane_id: str, session: str) 
     counters = COUNTER_EVENTS.get(event, {})
     if heartbeat_off and event in {"PreToolUse", "PostToolUse", "PostToolUseFailure", *COUNTER_EVENTS}:
         return
+    # Counter events (subagents, tasks) carry no status of their own; they are a
+    # delta on a row that already exists. Dropping them here cost the panel its
+    # subagent and task counters entirely.
     if status is None and not counters:
         return
     plugin = os.environ.get("ZJ_AGENT_PLUGIN", f"file:{Path.home()}/.config/zellij/plugins/zj-agent-mob.wasm")
@@ -548,7 +618,7 @@ def process_event(event: str, data: dict[str, Any], pane_id: str, session: str) 
             fields["detail"] = f"{fields['detail']} ({duration}s)"
     repo, worktree, branch = git_identity(fields.get("cwd", ""), directory, session, pane_id)
     fields.update({"repo": repo, "wt": worktree, "branch": branch})
-    payload = serialize(fields, include_empty=True)
+    payload = serialize(fields, include_empty=True, paths=frozenset({"repo", "wt", "tool_arg"}))
     if os.environ.get("ZJ_AGENT_DEBUG") == "1":
         try:
             debug = Path.home() / ".cache" / "zj-agent-mob" / "hook.log"
@@ -564,8 +634,12 @@ def process_event(event: str, data: dict[str, Any], pane_id: str, session: str) 
 
     path = record_path(directory, session, pane_id)
     if status == "ended":
+        key = f"{sanitize_session(session)}.{pane_id}"
         path.unlink(missing_ok=True)
-        (directory / f"git.{sanitize_session(session)}.{pane_id}").unlink(missing_ok=True)
+        (directory / f"git.{key}").unlink(missing_ok=True)
+        # An aborted or never-finished tool call leaves its start stamp behind;
+        # nothing else prunes it once the pane is gone.
+        (directory / f"inflight.{key}").unlink(missing_ok=True)
         return
     previous = read_fields(path)
     if not status and not previous.get("status"):
@@ -574,11 +648,17 @@ def process_event(event: str, data: dict[str, Any], pane_id: str, session: str) 
     for key, value in fields.items():
         if value or key not in merged or key == "status":
             merged[key] = value
+    # A delta event must not blank the row: inherit the last known status so the
+    # record still parses as an agent instead of an empty row.
+    if not status and not merged.get("status"):
+        return
+    if not status:
+        merged["status"] = status = previous["status"]
     merged["ts"] = str(int(time.time()))
     spool = {key: merged.get(key, "") for key in SPOOL_FIELDS}
     spool.update({key: value for key, value in merged.items() if key.startswith(("tokens_", "ctx_", "cost"))})
     if os.environ.get("ZJ_AGENT_SPOOL", "1") != "0" and merged.get("status"):
-        write_atomic(path, serialize(spool, include_empty=True))
+        write_atomic(path, serialize(spool, include_empty=True, paths=frozenset({"repo", "wt"})))
 
     if event == "UserPromptSubmit":
         context = peer_context(directory, session, fields.get("cwd", ""))

@@ -3,9 +3,8 @@
 
 #[cfg(target_family = "wasm")]
 pub(crate) use zellij_tile::shim::{
-    close_self, close_terminal_pane, focus_terminal_pane, get_session_environment_variables, hide_self,
-    open_command_pane_floating, run_command, send_sigint_to_pane_id, set_timeout, show_self, switch_session_with_focus,
-    write_chars_to_pane_id,
+    close_self, close_terminal_pane, focus_terminal_pane, hide_self, open_command_pane_floating, run_command,
+    send_sigint_to_pane_id, set_timeout, show_self, switch_session_with_focus, write_chars_to_pane_id,
 };
 
 #[cfg(target_family = "wasm")]
@@ -164,9 +163,6 @@ mod stub {
     pub(crate) fn close_terminal_pane(_id: u32) {}
     pub(crate) fn send_sigint_to_pane_id(_id: PaneId) {}
     pub(crate) fn run_command(_cmd: &[&str], _ctx: BTreeMap<String, String>) {}
-    pub(crate) fn get_session_environment_variables() -> BTreeMap<String, String> {
-        BTreeMap::new()
-    }
     pub(crate) fn switch_session_with_focus(_name: &str, _tab: Option<usize>, _pane: Option<(u32, bool)>) {}
     pub(crate) fn rename_own_pane(_title: &str) {}
     pub(crate) fn close_self() {}
