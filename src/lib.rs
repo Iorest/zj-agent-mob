@@ -169,6 +169,10 @@ pub mod testing {
             &self.state.agents[i].session_id
         }
 
+        pub fn cwd_of(&self, i: usize) -> &str {
+            &self.state.agents[i].cwd
+        }
+
         pub fn task_of(&self, i: usize) -> Option<&str> {
             self.state.agents[i].task.as_deref()
         }

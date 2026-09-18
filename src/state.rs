@@ -447,6 +447,12 @@ impl State {
             return removed;
         }
 
+        let mut decoded_args = args.clone();
+        if !crate::discover::decode_cwd(&mut decoded_args) {
+            return false;
+        }
+        let args = &decoded_args;
+
         // Subagent and task events carry no status: they adjust counters on a row
         // that already exists rather than describing the pane's own state.
         if raw_status.is_empty() {

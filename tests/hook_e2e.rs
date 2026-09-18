@@ -24,6 +24,7 @@ use zj_agent_mob::testing::Sim;
 struct Pipe {
     name: String,
     args: BTreeMap<String, String>,
+    raw_args: BTreeMap<String, String>,
     plugin: String,
     /// Set only on a fan-out call: `zellij --session <name> pipe ...`, which is
     /// how an urgent transition reaches a panel in another session.
@@ -298,7 +299,7 @@ fn consume_status(sim: &mut Sim, run: &Run) {
     let pipe = run
         .status_pipe()
         .unwrap_or_else(|| panic!("expected status pipe: {run:?}"));
-    assert!(sim.status(&pipe.args), "Rust rejected status: {:?}", pipe.args);
+    assert!(sim.status(&pipe.raw_args), "Rust rejected status: {:?}", pipe.raw_args);
 }
 
 fn assert_core_agent(sim: &Sim, status: &str, task: Option<&str>, detail: Option<&str>, block: Option<&str>) {
@@ -309,6 +310,34 @@ fn assert_core_agent(sim: &Sim, status: &str, task: Option<&str>, detail: Option
     assert_eq!(sim.task_of(0), task);
     assert_eq!(sim.detail_of(0), detail);
     assert_eq!(sim.block_of(0), block);
+}
+
+fn decode_cwd_wire(args: &mut BTreeMap<String, String>) {
+    if args.get("cwd_encoding").map(String::as_str) != Some("uri-v1") {
+        return;
+    }
+    let value = args.get("cwd").cloned().unwrap_or_default();
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = |byte: u8| -> u8 {
+                match byte {
+                    b'0'..=b'9' => byte - b'0',
+                    b'a'..=b'f' => byte - b'a' + 10,
+                    b'A'..=b'F' => byte - b'A' + 10,
+                    _ => panic!("invalid cwd encoding"),
+                }
+            };
+            decoded.push(hex(bytes[index + 1]) << 4 | hex(bytes[index + 2]));
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    args.insert("cwd".into(), String::from_utf8(decoded).expect("valid cwd UTF-8"));
 }
 
 fn parse_pipe(line: &str) -> Pipe {
@@ -335,10 +364,14 @@ fn parse_pipe(line: &str) -> Pipe {
         Some(at) => line[at + "--args ".len()..].trim().trim_matches('\'').to_string(),
         None => String::new(),
     };
+    let raw_args = parse_args(&args_raw).unwrap_or_default();
+    let mut args = raw_args.clone();
+    decode_cwd_wire(&mut args);
     Pipe {
         name: after("--name"),
+        args,
+        raw_args,
         plugin: after("--plugin"),
-        args: parse_args(&args_raw).unwrap_or_default(),
         session,
     }
 }
@@ -449,6 +482,39 @@ fn identifying_fields_reach_the_args() {
     assert_eq!(r.field("session_id"), "sess-1");
     assert_eq!(r.field("cwd"), "/home/me/api");
     assert_eq!(r.field("tool"), "claude", "claude is the default tool");
+}
+
+#[test]
+fn long_and_delimited_cwds_reach_rust_without_truncation() {
+    let cwd = format!(
+        "/tmp/{}/a,b=equal/%2C/中文/{}",
+        "long-directory-name-".repeat(8),
+        "tail".repeat(20)
+    );
+    assert!(cwd.len() > 60);
+    let event = serde_json::json!({
+        "hook_event_name": "SessionStart",
+        "session_id": "cwd-session",
+        "cwd": cwd,
+    })
+    .to_string();
+    for implementation in ["python", "shell"] {
+        let run = if implementation == "python" {
+            Hook::new()
+                .env("ZELLIJ_SESSION_NAME", "parity")
+                .env("ZJ_AGENT_TOOL", "codebuddy")
+                .env("ZJ_AGENT_SPOOL", "0")
+                .env("ZJ_AGENT_FANOUT", "0")
+                .run(&event)
+        } else {
+            Hook::new().exec_shell(&event, &[])
+        };
+        assert_eq!(run.field("cwd"), cwd, "{implementation} cwd");
+        assert_eq!(run.field("cwd_encoding"), "uri-v1", "{implementation} encoding");
+        let mut sim = Sim::new("parity", &["parity"]);
+        consume_status(&mut sim, &run);
+        assert_eq!(sim.cwd_of(0), cwd, "{implementation} Rust cwd");
+    }
 }
 
 #[test]
@@ -1243,11 +1309,13 @@ fn shell_hook_sanitizes_comma_values_before_serializing() {
     let pipe = parse_pipe(raw.lines().next().expect("status pipe"));
     assert_eq!(
         pipe.args.get("cwd").map(String::as_str),
-        Some("/tmp/project with-comma")
+        Some("/tmp/project,with-comma")
     );
     assert_eq!(pipe.args.get("session_id").map(String::as_str), Some("cb session"));
+    assert_eq!(pipe.args.get("cwd_encoding").map(String::as_str), Some("uri-v1"));
     let record = fs::read_to_string(spool.join("codebuddy.3")).expect("shell spool record");
-    assert!(record.contains("cwd=/tmp/project with-comma"), "{record}");
+    assert!(record.contains("cwd=%2Ftmp%2Fproject%2Cwith-comma"), "{record}");
+    assert!(record.contains("cwd_encoding=uri-v1"), "{record}");
     assert!(record.contains("session_id=cb session"), "{record}");
 }
 
@@ -1831,7 +1899,10 @@ fn same_pane_in_two_sessions_gets_two_verdict_files() {
 fn record(path: &Path) -> BTreeMap<String, String> {
     let body = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let first = body.lines().next().unwrap_or_default();
-    parse_args(first).unwrap_or_else(|frag| panic!("record fragment without a key: {frag:?} in {first}"))
+    let mut args =
+        parse_args(first).unwrap_or_else(|frag| panic!("record fragment without a key: {frag:?} in {first}"));
+    decode_cwd_wire(&mut args);
+    args
 }
 
 /// A counter event carries no status, but the hook still writes a full

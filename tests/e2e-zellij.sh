@@ -170,7 +170,9 @@ case "$screen" in
   *"working"*) ok "the row carries the status the hook sent" ;;
   *) bad "the row carries the status the hook sent" "no 'working': $screen" ;;
 esac
-zj action write 27 >/dev/null 2>&1 || true
+# Enter focuses the matching row before closing find; Escape would restore the
+# previous selection and could leave the safety assertion checking another row.
+zj action write 13 >/dev/null 2>&1 || true
 sleep 1
 
 hook '{"hook_event_name":"Notification","message":"Claude needs your permission to use Bash","notification_type":"permission_prompt","cwd":"/tmp/proj-alpha","session_id":"sess-a"}'

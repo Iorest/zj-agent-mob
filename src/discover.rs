@@ -141,15 +141,65 @@ pub(crate) struct Scan {
     pub(crate) complete: bool,
 }
 
+pub(crate) const CWD_ENCODING: &str = "uri-v1";
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn decode_percent(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = hex_digit(*bytes.get(index + 1)?)?;
+            let low = hex_digit(*bytes.get(index + 2)?)?;
+            decoded.push(high << 4 | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+/// Decodes the cwd field shared by direct pipe messages and spool records.
+/// Older records have no marker and already contain the legacy raw value.
+pub(crate) fn decode_cwd(args: &mut std::collections::BTreeMap<String, String>) -> bool {
+    match args.get("cwd_encoding").map(String::as_str) {
+        None => true,
+        Some(CWD_ENCODING) => {
+            let Some(cwd) = args.get("cwd").cloned() else {
+                return true;
+            };
+            let Some(decoded) = decode_percent(&cwd) else {
+                return false;
+            };
+            args.insert("cwd".into(), decoded);
+            true
+        }
+        Some(_) => false,
+    }
+}
+
 /// Splits `key=value,key=value` the way the pipe args arrive, so a spool record
 /// and a pipe message parse into the same shape.
-fn parse_args(rest: &str) -> std::collections::BTreeMap<String, String> {
-    rest.split(',')
+fn parse_args(rest: &str) -> Option<std::collections::BTreeMap<String, String>> {
+    let mut args = rest
+        .split(',')
         .filter_map(|kv| {
             let (k, v) = kv.split_once('=')?;
             Some((k.to_string(), v.to_string()))
         })
-        .collect()
+        .collect();
+    decode_cwd(&mut args).then_some(args)
 }
 
 /// Ignores anything malformed rather than failing the whole scan: a partial
@@ -214,7 +264,9 @@ pub(crate) fn parse(stdout: &str) -> Scan {
                     continue;
                 }
                 seen_files.push(path.to_string());
-                let args = parse_args(record);
+                let Some(args) = parse_args(record) else {
+                    continue;
+                };
                 let (Some(ts), Some(pane_id)) = (
                     args.get("ts").and_then(|t| t.parse::<f64>().ok()),
                     args.get("pane_id").and_then(|p| p.parse::<u32>().ok()),
@@ -294,6 +346,33 @@ mod tests {
 
     fn rec(name: &str, body: &str) -> String {
         format!("SPOOL /tmp/s/{}:{}\n", name, body)
+    }
+
+    #[test]
+    fn decodes_uri_v1_cwds_and_preserves_legacy_records() {
+        let mut args = std::collections::BTreeMap::from([
+            ("cwd_encoding".into(), CWD_ENCODING.into()),
+            ("cwd".into(), "%2Ftmp%2Fa%2Cb%3Deq%0A%E4%B8%AD%E6%96%87".into()),
+        ]);
+        assert!(decode_cwd(&mut args));
+        assert_eq!(args.get("cwd").unwrap(), "/tmp/a,b=eq\n中文");
+
+        let mut legacy = std::collections::BTreeMap::from([("cwd".into(), "/tmp/legacy".into())]);
+        assert!(decode_cwd(&mut legacy));
+        assert_eq!(legacy.get("cwd").unwrap(), "/tmp/legacy");
+    }
+
+    #[test]
+    fn rejects_invalid_cwd_encoding() {
+        for value in ["%", "%GG", "%E4%A"] {
+            let mut args = std::collections::BTreeMap::from([
+                ("cwd_encoding".into(), CWD_ENCODING.into()),
+                ("cwd".into(), value.into()),
+            ]);
+            assert!(!decode_cwd(&mut args), "{value} should be rejected");
+        }
+        let mut args = std::collections::BTreeMap::from([("cwd_encoding".into(), "future".into())]);
+        assert!(!decode_cwd(&mut args));
     }
 
     #[test]

@@ -88,6 +88,7 @@ spool_dir() {
 peer_records() {
   _self=$1
   _cwd=$2
+  _cwd_wire=$(encode_cwd "$_cwd")
   for _rec in "$(spool_dir)"/*.*; do
     [ -f "$_rec" ] || continue
     _name=${_rec##*/}
@@ -98,7 +99,7 @@ peer_records() {
     _line=$(head -n 1 "$_rec" 2>/dev/null) || continue
     _fields=$(printf '%s' "$_line" | tr ',' '\n')
     _rcwd=$(printf '%s\n' "$_fields" | sed -n 's/^cwd=//p' | head -1)
-    [ "$_rcwd" = "$_cwd" ] || continue
+    [ "$_rcwd" = "$_cwd_wire" ] || continue
     _rstatus=$(printf '%s\n' "$_fields" | sed -n 's/^status=//p' | head -1)
     case "$_rstatus" in
       working|waiting|idlewait|compact) ;;
@@ -219,9 +220,14 @@ case "$event" in
     ;;
 esac
 
-# --args is comma-separated key=value, so commas and newlines must go.
+# --args is comma-separated key=value. Most display fields are intentionally
+# capped, but cwd is an executable path and uses a separate URI encoding below.
 sanitize() {
   printf '%s' "$1" | tr '\n\r\t,' '    ' | cut -c1-60 | sed 's/  */ /g; s/^ *//; s/ *$//'
+}
+
+encode_cwd() {
+  printf '%s' "$1" | jq -Rsr @uri
 }
 
 tool_secs=''
@@ -329,9 +335,9 @@ perm_mode=$(sanitize "$perm_mode")
 model=$(sanitize "$model")
 # Pipe and spool records are comma-separated key/value lists. Keep the raw cwd,
 # session id, and tool name above for git/transcript/permission work, but sanitize
-# their serialized copies so a comma in a directory or agent id cannot split the
-# record and make the plugin read the wrong fields.
-cwd_field=$(sanitize "$cwd")
+# their serialized copies so a comma in an agent id cannot split the record and
+# make the plugin read the wrong fields. cwd has its own lossless wire encoding.
+cwd_field=$(encode_cwd "$cwd")
 session_id_field=$(sanitize "$session_id")
 tool_field=$(sanitize "$TOOL")
 
@@ -384,7 +390,7 @@ if [ "${ZJ_AGENT_DEBUG:-0}" = "1" ]; then
     >> "$HOME/.cache/zj-agent-mob/hook.log"
 fi
 
-ARGS="pane_id=$ZELLIJ_PANE_ID,session=$SESSION,tool=$tool_field,status=$status,session_id=$session_id_field,cwd=$cwd_field,task=$task,detail=$detail,block=$block,perm_mode=$perm_mode,model=$model,agent_type=$agent_type,agent_id=$agent_id,repo=$repo,wt=$wt,branch=$branch,tool_secs=$tool_secs,subagent_delta=$subagent_delta,task_delta=$task_delta,task_done_delta=$task_done_delta"
+ARGS="pane_id=$ZELLIJ_PANE_ID,session=$SESSION,tool=$tool_field,status=$status,session_id=$session_id_field,cwd_encoding=uri-v1,cwd=$cwd_field,task=$task,detail=$detail,block=$block,perm_mode=$perm_mode,model=$model,agent_type=$agent_type,agent_id=$agent_id,repo=$repo,wt=$wt,branch=$branch,tool_secs=$tool_secs,subagent_delta=$subagent_delta,task_delta=$task_delta,task_done_delta=$task_done_delta"
 
 zellij pipe --name agent-status --plugin "$PLUGIN" --args "$ARGS" >/dev/null 2>&1 || true
 
@@ -430,18 +436,30 @@ if [ "${ZJ_AGENT_SPOOL:-1}" != "0" ] && [ -n "$SESSION" ] && [ "$status" != ende
     # what stops a recycled pane id inheriting a dead agent's status.
     # Counter events carry no status; an empty one is unparseable and would
     # strand the row at `unknown`, so inherit it too.
+    inherited_cwd=0
     if [ -z "$session_id" ] || [ -z "$cwd" ] || [ -z "$status" ] || [ -z "$model" ]; then
       prev=$(head -n 1 "$sfile" 2>/dev/null || true)
       if [ -n "$prev" ]; then
         [ -n "$session_id" ] || session_id=$(printf '%s' "$prev" | tr ',' '\n' | sed -n 's/^session_id=//p' | head -1)
-        [ -n "$cwd" ] || cwd=$(printf '%s' "$prev" | tr ',' '\n' | sed -n 's/^cwd=//p' | head -1)
+        if [ -n "$cwd" ]; then
+          cwd_field=$(encode_cwd "$cwd")
+        else
+          cwd=$(printf '%s' "$prev" | tr ',' '\n' | sed -n 's/^cwd=//p' | head -1)
+          cwd_encoding=$(printf '%s' "$prev" | tr ',' '\n' | sed -n 's/^cwd_encoding=//p' | head -1)
+          if [ "$cwd_encoding" = uri-v1 ]; then
+            cwd_field=$cwd
+          else
+            cwd_field=$(encode_cwd "$cwd")
+          fi
+          inherited_cwd=1
+        fi
         [ -n "$status" ] || status=$(printf '%s' "$prev" | tr ',' '\n' | sed -n 's/^status=//p' | head -1)
         [ -n "$model" ] || model=$(printf '%s' "$prev" | tr ',' '\n' | sed -n 's/^model=//p' | head -1)
       fi
     fi
     # Rebuild serialized copies after inheriting fields from the previous
     # snapshot; otherwise a quiet notification would persist them as empty.
-    cwd_field=$(sanitize "$cwd")
+    [ "$inherited_cwd" = 1 ] || cwd_field=$(encode_cwd "$cwd")
     session_id_field=$(sanitize "$session_id")
     if [ -z "$status" ]; then
       SKIP_SPOOL=1
@@ -449,8 +467,7 @@ if [ "${ZJ_AGENT_SPOOL:-1}" != "0" ] && [ -n "$SESSION" ] && [ "$status" != ende
     # Notification and counter events inherit identity fields from the previous
     # snapshot above; serialize the inherited values, not the empty input fields.
     session_id_field=$(sanitize "$session_id")
-    cwd_field=$(sanitize "$cwd")
-    SPOOL_ARGS="pane_id=$ZELLIJ_PANE_ID,session=$SESSION,tool=$tool_field,status=$status,session_id=$session_id_field,cwd=$cwd_field,task=$task,detail=$detail,block=$block,perm_mode=$perm_mode,model=$model,agent_type=$agent_type,repo=$repo,wt=$wt,branch=$branch"
+    SPOOL_ARGS="pane_id=$ZELLIJ_PANE_ID,session=$SESSION,tool=$tool_field,status=$status,session_id=$session_id_field,cwd_encoding=uri-v1,cwd=$cwd_field,task=$task,detail=$detail,block=$block,perm_mode=$perm_mode,model=$model,agent_type=$agent_type,repo=$repo,wt=$wt,branch=$branch"
     # Rename is atomic within a filesystem, so a reader sees the old record or
     # the new one, never a half-written one. $$ keeps concurrent hooks apart.
     if [ "${SKIP_SPOOL:-0}" != "1" ] && printf 'ts=%s,%s\n' "$(date +%s)" "$SPOOL_ARGS" > "$sfile.$$.tmp" 2>/dev/null; then

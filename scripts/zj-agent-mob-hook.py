@@ -9,8 +9,10 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, unquote_to_bytes
 
 MAX_VALUE_LENGTH = 60
+CWD_ENCODING = "uri-v1"
 PIPE_TIMEOUT_SECONDS = 0.5
 FANOUT_DEADLINE_SECONDS = 0.8
 FANOUT_STATUSES = {"waiting", "idlewait", "failed", "done"}
@@ -62,6 +64,17 @@ def first_value(data: dict[str, Any], *keys: str) -> str:
         if value not in (None, ""):
             return str(value)
     return ""
+
+
+def encode_cwd(value: object) -> str:
+    return quote(str(value or ""), safe="")
+
+
+def decode_cwd(value: str) -> str:
+    for index, char in enumerate(value):
+        if char == "%" and (index + 2 >= len(value) or any(c not in "0123456789abcdefABCDEF" for c in value[index + 1:index + 3])):
+            raise ValueError("invalid percent escape")
+    return unquote_to_bytes(value).decode("utf-8", errors="strict")
 
 
 def agent_tool() -> str:
@@ -171,6 +184,11 @@ def read_fields(path: Path) -> dict[str, str]:
         key, separator, value = item.partition("=")
         if separator and key:
             result[key] = value
+    if result.get("cwd_encoding") == CWD_ENCODING and "cwd" in result:
+        try:
+            result["cwd"] = decode_cwd(result["cwd"])
+        except (ValueError, UnicodeDecodeError):
+            return {}
     return result
 
 
@@ -191,6 +209,12 @@ def write_atomic(path: Path, content: str) -> None:
 def serialize(fields: dict[str, str], include_empty: bool = False) -> str:
     output = []
     for key, value in fields.items():
+        if key == "cwd":
+            sanitized = encode_cwd(value)
+            if include_empty or sanitized:
+                output.append(f"cwd_encoding={CWD_ENCODING}")
+                output.append(f"cwd={sanitized}")
+            continue
         sanitized = sanitize_value(value)
         if include_empty or sanitized:
             output.append(f"{key}={sanitized}")
