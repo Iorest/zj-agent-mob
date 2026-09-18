@@ -41,8 +41,8 @@ fi
 ZJ_TIMEOUT_SECS=${ZJ_TIMEOUT_SECS:-8}
 
 # Floating panel geometry, as percentages of the viewport. Tuned so the panel is
-# wide enough not to truncate the task column and tall enough for the longest
-# view (the install screen), without leaving a dead band under the last row.
+# wide enough not to truncate the task column and tall enough for the agent list,
+# without leaving a dead band under the last row.
 # Y is set so the panel sits centred rather than pinned to the top. The panel
 # renders content from the top of its pane and the tour's tallest view is about
 # 14 rows, so the pane is sized close to that and pushed down by roughly half the
@@ -391,9 +391,8 @@ show_panel() {
   sleep 1
 }
 
-# Re-assert the panel geometry. Switching between the list and the install screen
-# can snap the floating pane back to its default size, which puts the prop panes
-# back in frame - so call this after any view toggle, not just at startup.
+# Re-assert the panel geometry after a Zellij pane change, which can snap the
+# floating pane back to its default size and put the prop panes in frame.
 #
 # Height is deliberately short of the viewport rather than filling it. The panel
 # renders its content from the top, so a full-height pane leaves a large empty
@@ -411,18 +410,16 @@ fill_frame() {
 # Match on short, stable strings: the task column truncates with an ellipsis
 # when the pane is narrow, so a long needle can never match.
 #
-# But NOT strings the empty state also contains. Its placeholder reads "Start
-# claude or codex in a pane", so `wait_for claude` matched an EMPTY panel and
-# returned 0 - which is why acts 1 and 2 reported success through four renders
-# while nothing had been piped, and why act 3 ("waiting", the first needle absent
-# from that text) looked like the first thing to break. Guard it explicitly
-# rather than relying on every future caller picking a safe needle.
+# But NOT strings the empty state also contains. Its placeholder reads "Start a
+# coding agent in a pane", so `wait_for agent` would match an EMPTY panel and
+# return 0 before anything had been piped. Guard it explicitly rather than
+# relying on every future caller picking a safe needle.
 wait_for() {
   needle=$1
   tries=${2:-40}
   i=0
   case $needle in
-    claude | codex | agent | pane | install | hooks)
+    agent | pane)
       echo "wait_for: '$needle' also appears in the empty-state text; pick a needle only a real row can produce" >&2
       return 1
       ;;

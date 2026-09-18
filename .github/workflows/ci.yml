@@ -32,7 +32,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # tests/hook_e2e.rs drives the real hook script, which shells out to jq;
       # wabt provides the wasm-objdump the exports check needs.
       - name: Install jq and wabt
         run: sudo apt-get update && sudo apt-get install -y jq wabt
@@ -70,4 +69,4 @@ jobs:
 
       - run: ./scripts/check.sh shellcheck
 
-      - run: ./scripts/check.sh installer
+      - run: ./scripts/check.sh python

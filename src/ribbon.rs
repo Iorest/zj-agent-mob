@@ -30,14 +30,14 @@ impl Hint {
 /// three labels: the digit fast path lost its slot because every row prints its
 /// own number, so `g` is the only goto spelling that needs advertising.
 pub(crate) const LIST_HINTS: &[Hint] = &[
-    Hint::new("\u{21b5}", "jump"),
-    Hint::new("g", "goto"),
+    Hint::new("\u{21b5}", "jmp"),
+    Hint::new("g", "go"),
     Hint::new("/", "find"),
     Hint::new("x", "kill"),
-    Hint::new("d", "clear"),
+    Hint::new("d", "clr"),
     Hint::new("s", "sort"),
-    Hint::new("i", "install"),
     Hint::new("q", "hide"),
+    Hint::new("t", "sh"),
 ];
 
 /// Shown while the selected agent is blocked on you, so the keys that type into
@@ -67,21 +67,6 @@ pub(crate) const ASK_HINTS: &[Hint] = &[
     Hint::new("\u{21b5}", "jump"),
     Hint::new("x", "kill"),
     Hint::new("q", "hide"),
-];
-
-pub(crate) const SETUP_HINTS: &[Hint] = &[
-    Hint::new("1", "claude"),
-    Hint::new("2", "codex"),
-    Hint::new("3", "both"),
-    Hint::new("q", "quit"),
-];
-
-pub(crate) const INSTALL_HINTS: &[Hint] = &[
-    Hint::new("c", "claude"),
-    Hint::new("x", "codex"),
-    Hint::new("p", "plugin"),
-    Hint::new("r", "refresh"),
-    Hint::new("esc", "back"),
 ];
 
 /// A space each side of every segment, plus the two joining arrow glyphs.
@@ -118,8 +103,6 @@ mod tests {
     fn key_range_covers_the_key_only() {
         for h in LIST_HINTS
             .iter()
-            .chain(INSTALL_HINTS)
-            .chain(SETUP_HINTS)
             .chain(ASK_HINTS)
             .chain(REPLY_HINTS)
             .chain(REPLY_EDIT_HINTS)
@@ -140,7 +123,7 @@ mod tests {
 
     #[test]
     fn every_hint_has_a_distinct_key() {
-        for set in [LIST_HINTS, INSTALL_HINTS, ASK_HINTS, REPLY_HINTS, REPLY_EDIT_HINTS] {
+        for set in [LIST_HINTS, ASK_HINTS, REPLY_HINTS, REPLY_EDIT_HINTS] {
             let mut keys: Vec<&str> = set.iter().map(|h| h.key).collect();
             keys.sort_unstable();
             let before = keys.len();
@@ -153,7 +136,7 @@ mod tests {
     /// narrower than the ribbons it replaces and still name every key.
     #[test]
     fn plain_fallback_is_narrower_and_keeps_every_key() {
-        for set in [LIST_HINTS, SETUP_HINTS, INSTALL_HINTS] {
+        for set in [LIST_HINTS] {
             let plain = plain_line(set);
             assert!(
                 plain.chars().count() < ribbon_width(set),
@@ -167,16 +150,6 @@ mod tests {
         }
     }
 
-    /// The README documents this exact footer, and it is the only place the
-    /// install screen is advertised.
-    #[test]
-    fn list_footer_matches_the_documented_row() {
-        assert_eq!(
-            plain_line(LIST_HINTS),
-            " \u{21b5} jump  g goto  / find  x kill  d clear  s sort  i install  q hide"
-        );
-    }
-
     /// Dropping the angle brackets bought back two columns per hint, which is
     /// what lets the full list footer render as ribbons in a typical floating
     /// pane instead of falling back to plain text.
@@ -184,8 +157,6 @@ mod tests {
     fn every_hint_row_fits_a_typical_pane_as_ribbons() {
         for (name, set) in [
             ("list", LIST_HINTS),
-            ("setup", SETUP_HINTS),
-            ("install", INSTALL_HINTS),
             ("ask", ASK_HINTS),
             ("reply", REPLY_HINTS),
             ("reply-edit", REPLY_EDIT_HINTS),
@@ -205,7 +176,7 @@ mod tests {
     #[test]
     fn list_hints_cover_the_documented_keys() {
         let keys: Vec<&str> = LIST_HINTS.iter().map(|h| h.key).collect();
-        for expect in ["x", "d", "s", "i", "q", "g", "/"] {
+        for expect in ["x", "d", "s", "q", "g", "/"] {
             assert!(keys.contains(&expect), "missing hint for {:?}", expect);
         }
     }
@@ -230,7 +201,7 @@ mod tests {
         let shift_or_motion = ["D", "G", "g", "j", "k"];
 
         for key in [
-            "j", "k", "g", "G", "s", "x", "a", "r", "d", "D", "y", "m", "n", "o", "i", "q", "/",
+            "j", "k", "g", "G", "s", "x", "a", "r", "d", "D", "y", "m", "n", "o", "q", "/",
         ] {
             let in_footer = LIST_HINTS.iter().any(|h| h.key == key);
             let excused = contextual.contains(&key) || shift_or_motion.contains(&key) || key == "n";

@@ -26,12 +26,10 @@ impl ZellijPlugin for State {
             .unwrap_or(60.0);
         self.notifier.sound = configuration.get("notify_sound").map(|v| v == "true").unwrap_or(false);
         self.summary_path = configuration.get("summary_file").cloned().unwrap_or_default();
-        self.check_updates = configuration.get("check_updates").map(|v| v != "false").unwrap_or(true);
 
         request_permission(&[
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
-            // Only the install screen needs this; it shells out to init.sh.
             PermissionType::RunCommands,
         ]);
         subscribe(&[
@@ -55,16 +53,9 @@ impl ZellijPlugin for State {
 
     fn update(&mut self, event: Event) -> bool {
         match event {
-            // Denial is not fatal, so this ignores the result: only the install
-            // screen needs RunCommands, and it reports its own failures.
+            // Denial is not fatal, so this ignores the result.
             Event::PermissionRequestResult(_) => {
                 self.permissions_granted = true;
-                // `run_command` only reaches the host after the grant; a refresh
-                // fired from `load` is silently dropped.
-                self.install.refresh();
-                if self.check_updates {
-                    crate::install::Update::dispatch_check();
-                }
                 self.request_scan();
                 self.detect_notifier();
                 self.rename_pane();
@@ -127,7 +118,7 @@ impl ZellijPlugin for State {
             Event::RunCommandResult(exit_code, stdout, stderr, context) => {
                 let out = String::from_utf8_lossy(&stdout);
                 let err = String::from_utf8_lossy(&stderr);
-                if context.get(crate::install::CTX_KEY).map(String::as_str) == Some(crate::notify::CTX_DETECT) {
+                if context.get(crate::CTX_KEY).map(String::as_str) == Some(crate::notify::CTX_DETECT) {
                     // A failed probe is recorded as `none` rather than left
                     // empty, so it is not retried on every permission event.
                     self.notifier.binary = match exit_code.unwrap_or(0) == 0 && !out.trim().is_empty() {
@@ -136,16 +127,7 @@ impl ZellijPlugin for State {
                     };
                     return false;
                 }
-                if context.get(crate::install::CTX_KEY).map(String::as_str) == Some(crate::install::CTX_UPDATE_CHECK) {
-                    return self.update.apply_check(exit_code, &out);
-                }
-                if context.get(crate::install::CTX_KEY).map(String::as_str) == Some(crate::install::CTX_UPDATE_RUN) {
-                    if self.update.finish(exit_code, &out, &err) {
-                        host::reload_plugin_with_id(self.own_plugin_id);
-                    }
-                    return true;
-                }
-                if context.get(crate::install::CTX_KEY).map(String::as_str) == Some(crate::discover::CTX_SCAN) {
+                if context.get(crate::CTX_KEY).map(String::as_str) == Some(crate::discover::CTX_SCAN) {
                     self.scan_pending = false;
                     // A failed scan leaves the list exactly as it was: discovery
                     // is an enhancement, and hook-reported rows are the truth.
@@ -174,7 +156,7 @@ impl ZellijPlugin for State {
                     }
                     return false;
                 }
-                self.install.on_command_result(exit_code, &out, &err, &context)
+                false
             }
             _ => false,
         }
@@ -210,14 +192,6 @@ impl ZellijPlugin for State {
 
         let width = content_width(cols);
 
-        if self.install.open {
-            self.render_install(rows, width);
-            return;
-        }
-        if self.showing_setup() {
-            self.render_setup(rows, width);
-            return;
-        }
         if self.agents.is_empty() {
             self.render_empty(width);
             return;
@@ -375,38 +349,6 @@ impl State {
         host::rename_own_pane(PANE_TITLE);
     }
 
-    fn render_install(&self, rows: usize, width: usize) {
-        let mut y = self.render_header(&format!("install \u{00b7} v{}", crate::install::CURRENT_VERSION), width);
-        y = self.render_rows(self.install.list_items(), y);
-        let note = self.install.notes().or_else(|| self.update.note());
-        y = footer_start(y, rows, 2 + usize::from(note.is_some()));
-        y = self.render_rule(y, width);
-        y = self.render_notes(note, y, width);
-        self.render_hints(ribbon::INSTALL_HINTS, y, width);
-    }
-
-    fn render_setup(&self, rows: usize, width: usize) {
-        let mut y = self.render_header("setup", width);
-        print_text_with_coordinates(
-            Text::new(truncate(
-                "  Hooks are not installed, so no agent can report status.",
-                width,
-            ))
-            .color_range(DIM_LEVEL, ..),
-            0,
-            y,
-            None,
-            None,
-        );
-        y += 2;
-        y = self.render_rows(self.install.setup_items(), y);
-        let note = self.install.notes();
-        y = footer_start(y, rows, 2 + usize::from(note.is_some()));
-        y = self.render_rule(y, width);
-        y = self.render_notes(note, y, width);
-        self.render_hints(ribbon::SETUP_HINTS, y, width);
-    }
-
     /// "No agents" is a claim the panel can only make once a scan has come back
     /// empty. Before that it has merely not been told about any.
     fn render_empty(&self, width: usize) {
@@ -418,18 +360,13 @@ impl State {
         let y = self.render_header(subtitle, width);
         let rows = vec![
             Text::new(truncate(
-                "  Start claude or codex in a pane; hooks report status here.",
+                "  Start a coding agent in a pane; configure its hook to report status here.",
                 width,
             ))
             .color_range(DIM_LEVEL, ..),
-            Text::new(truncate(
-                "  Press n to start one here, or i to check and install the hooks.",
-                width,
-            ))
-            .color_range(DIM_LEVEL, ..),
+            Text::new(truncate("  Press n to start one here.", width)).color_range(DIM_LEVEL, ..),
         ];
-        let y = self.render_rows(rows, y);
-        self.render_notes(self.update.note(), y + 1, width);
+        self.render_rows(rows, y);
     }
 
     pub(crate) fn head_line(&self, width: usize) -> String {
@@ -644,9 +581,7 @@ impl State {
 
         // Everything that is not a list row: header, its rule, the footer rule,
         // the hints, and the error note when there is one.
-        let update_note = self.update.note();
-        let chrome =
-            2 + 2 * usize::from(rules) + usize::from(self.action_error.is_some()) + usize::from(update_note.is_some());
+        let chrome = 2 + 2 * usize::from(rules) + usize::from(self.action_error.is_some());
         let budget = rows.saturating_sub(chrome);
         let keep_visible = marked.and_then(|m| visible.iter().position(|&i| i == m)).unwrap_or(0);
         let view = viewport(&groups, self.scroll, keep_visible, budget);
@@ -666,8 +601,7 @@ impl State {
             items.push(more_row(view.hidden_below, false, width));
         }
         y = self.render_rows(items, y);
-        let footer_height =
-            usize::from(rules) + usize::from(self.action_error.is_some()) + usize::from(update_note.is_some()) + 1;
+        let footer_height = usize::from(rules) + usize::from(self.action_error.is_some()) + 1;
         y = footer_start(y, rows, footer_height);
         if rules {
             y = self.render_rule(y, width);
@@ -676,9 +610,6 @@ impl State {
         // cannot show any other way: the row is already gone.
         if let Some(msg) = self.action_error.as_deref() {
             y = self.render_notes(Some((msg.to_string(), true)), y, width);
-        }
-        if update_note.is_some() {
-            y = self.render_notes(update_note, y, width);
         }
         let selected_has_ask = self
             .agents

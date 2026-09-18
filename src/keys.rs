@@ -3,96 +3,11 @@
 use zellij_tile::prelude::*;
 
 use crate::host;
-use crate::install::{SetupAction, Target};
 use crate::state::{Find, State};
 use crate::status::Status;
 use crate::util::wrap;
 
 impl State {
-    /// The setup prompt owns the whole screen while it is up, so the agent-list
-    /// keys below are unreachable and cannot fire.
-    fn handle_setup_key(&mut self, key: KeyWithModifier) -> bool {
-        match key.bare_key {
-            BareKey::Char('j') | BareKey::Down => {
-                self.install.move_setup_selection(1);
-                true
-            }
-            BareKey::Char('k') | BareKey::Up => {
-                self.install.move_setup_selection(-1);
-                true
-            }
-            BareKey::Enter => {
-                let a = self.install.setup_at_cursor();
-                self.run_setup(a);
-                true
-            }
-            BareKey::Esc => {
-                self.run_setup(SetupAction::Quit);
-                true
-            }
-            // The full install screen is the only route to the plugin row.
-            BareKey::Char('i') => {
-                self.install.open = true;
-                self.install.refresh();
-                true
-            }
-            BareKey::Char(c) => match SetupAction::ALL.into_iter().find(|a| a.hotkey() == c) {
-                Some(a) => {
-                    self.install.setup_selected = a as usize;
-                    self.run_setup(a);
-                    true
-                }
-                None => false,
-            },
-            _ => false,
-        }
-    }
-
-    /// Translates `Quit` into hiding the panel.
-    fn run_setup(&mut self, action: SetupAction) {
-        if !self.install.run_setup(action) {
-            self.hidden = true;
-            host::hide_self();
-        }
-    }
-
-    /// Separate from the agent list so a stray key here cannot kill a pane.
-    fn handle_install_key(&mut self, key: KeyWithModifier) -> bool {
-        match key.bare_key {
-            BareKey::Char('j') | BareKey::Down => {
-                self.install.move_selection(1);
-                true
-            }
-            BareKey::Char('k') | BareKey::Up => {
-                self.install.move_selection(-1);
-                true
-            }
-            BareKey::Enter => {
-                let t = self.install.target_at_cursor();
-                self.install.toggle(t);
-                true
-            }
-            BareKey::Char('r') => {
-                self.install.refresh();
-                true
-            }
-            BareKey::Char('U') => self.update.begin(),
-            BareKey::Char('q') | BareKey::Esc | BareKey::Char('i') => {
-                self.install.open = false;
-                true
-            }
-            BareKey::Char(c) => match Target::ALL.into_iter().find(|t| t.hotkey() == c) {
-                Some(t) => {
-                    self.install.selected = t as usize;
-                    self.install.toggle(t);
-                    true
-                }
-                None => false,
-            },
-            _ => false,
-        }
-    }
-
     /// A row can be killed if its session is still alive. Foreign rows go
     /// through the `zellij` CLI, which takes a session argument where the
     /// plugin's own shims act on the current session only.
@@ -357,12 +272,6 @@ impl State {
     }
 
     pub(crate) fn handle_key(&mut self, key: KeyWithModifier) -> bool {
-        if self.install.open {
-            return self.handle_install_key(key);
-        }
-        if self.showing_setup() {
-            return self.handle_setup_key(key);
-        }
         if self.reply.is_some() {
             return self.handle_reply_key(key);
         }
@@ -378,13 +287,6 @@ impl State {
         // Any deliberate keypress means the last failure has been seen.
         self.action_error = None;
         match key.bare_key {
-            // Opening refreshes: the state may have changed outside the panel.
-            BareKey::Char('i') => {
-                self.install.open = true;
-                self.kill_armed = None;
-                self.install.refresh();
-                true
-            }
             BareKey::Char('j') | BareKey::Down => {
                 self.move_selection(1);
                 true
@@ -419,7 +321,6 @@ impl State {
                 self.jump_to_row(self.agents.len());
                 true
             }
-            BareKey::Char('U') => self.update.begin(),
             BareKey::Char(c @ '1'..='9') => {
                 let idx = (c as u8 - b'1') as usize;
                 if idx < self.agents.len() {
@@ -513,6 +414,7 @@ impl State {
             BareKey::Char('y') => self.send_reply("y\n"),
             BareKey::Char('m') => self.begin_reply(),
             BareKey::Char('n') => self.spawn_agent(),
+            BareKey::Char('t') => self.spawn_shell_terminal(),
             BareKey::Char('q') | BareKey::Esc => {
                 self.kill_armed = None;
                 self.hidden = true;
@@ -527,7 +429,6 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::install::{InstallState, SetupAction, Target};
     use std::collections::BTreeMap;
 
     fn key(c: char) -> KeyWithModifier {
@@ -602,173 +503,6 @@ mod tests {
             s.kill_armed.is_none(),
             "re-sorting must not leave a kill armed on a moved row"
         );
-    }
-
-    #[test]
-    fn shift_u_starts_an_update_only_when_one_is_known() {
-        let mut s = state_with_one_agent();
-        assert!(!s.handle_key(key('U')));
-        assert!(!s.update.busy);
-        s.update.latest = Some("v999.0.0".to_string());
-        assert!(s.handle_key(key('U')));
-        assert!(s.update.busy);
-    }
-
-    #[test]
-    fn shift_u_works_on_the_install_screen_too() {
-        let mut s = state_with_one_agent();
-        s.handle_key(key('i'));
-        s.update.latest = Some("v999.0.0".to_string());
-        assert!(s.handle_key(key('U')));
-        assert!(s.update.busy);
-        assert!(s.install.open, "updating must not close the screen");
-    }
-
-    #[test]
-    fn i_opens_and_closes_the_install_screen() {
-        let mut s = state_with_one_agent();
-        assert!(!s.install.open);
-        s.handle_key(key('i'));
-        assert!(s.install.open);
-        s.handle_key(key('i'));
-        assert!(!s.install.open, "i toggles back out");
-        s.handle_key(key('i'));
-        s.handle_key(KeyWithModifier::new(BareKey::Esc));
-        assert!(!s.install.open, "esc leaves the install screen");
-    }
-
-    /// `x` kills a pane in the list but selects Codex on the install screen.
-    #[test]
-    fn x_on_the_install_screen_does_not_touch_agents() {
-        let mut s = state_with_one_agent();
-        s.handle_key(key('i'));
-        s.handle_key(key('x'));
-        assert_eq!(s.agents.len(), 1, "x must not kill a pane from the install screen");
-        assert_eq!(s.kill_armed, None, "x must not arm a kill from the install screen");
-        assert_eq!(s.install.target_at_cursor(), crate::install::Target::Codex);
-    }
-
-    /// Otherwise a queued `x` closes a pane after navigating away.
-    #[test]
-    fn opening_install_screen_disarms_a_pending_kill() {
-        let mut s = state_with_one_agent();
-        s.handle_key(key('x'));
-        assert_eq!(
-            s.kill_armed,
-            Some(crate::agent::AgentId {
-                session: "mob".into(),
-                pane_id: 7
-            })
-        );
-        s.handle_key(key('i'));
-        assert_eq!(s.kill_armed, None);
-    }
-
-    #[test]
-    fn install_hotkeys_move_the_cursor_to_their_row() {
-        let mut s = state_with_one_agent();
-        s.handle_key(key('i'));
-        for (c, expect) in [
-            ('c', crate::install::Target::Claude),
-            ('x', crate::install::Target::Codex),
-            ('p', crate::install::Target::Plugin),
-        ] {
-            s.handle_key(key(c));
-            assert_eq!(s.install.target_at_cursor(), expect, "key {:?}", c);
-        }
-    }
-
-    /// From Unknown, toggling must not claim work is in flight.
-    #[test]
-    fn toggling_from_unknown_state_is_inert() {
-        let mut s = state_with_one_agent();
-        s.handle_key(key('i'));
-        s.handle_key(key('c'));
-        assert_eq!(s.install.state(crate::install::Target::Claude), InstallState::Unknown);
-    }
-
-    /// Empty list plus a status read saying nothing is hooked.
-    fn state_needing_setup() -> State {
-        let mut s = State {
-            permissions_granted: true,
-            ..Default::default()
-        };
-        let ctx: BTreeMap<String, String> = [(crate::install::CTX_KEY, crate::install::CTX_STATUS)]
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        s.install
-            .on_command_result(Some(0), "claude=absent\ncodex=absent\n", "", &ctx);
-        s
-    }
-
-    #[test]
-    fn setup_screen_shows_only_when_there_are_no_agents_and_no_hooks() {
-        let mut s = state_needing_setup();
-        assert!(s.showing_setup());
-
-        // An agent reporting in proves the hooks work, whatever status said.
-        s.handle_status(&args_map(&[("pane_id", "1"), ("status", "idle")]));
-        assert!(!s.showing_setup());
-
-        s.handle_status(&args_map(&[("pane_id", "1"), ("status", "ended")]));
-        assert!(s.showing_setup(), "back to empty and unhooked");
-
-        s.install.open = true;
-        assert!(!s.showing_setup(), "the full install screen takes over");
-    }
-
-    #[test]
-    fn setup_hotkeys_pick_their_action() {
-        for (c, expect) in [
-            ('1', SetupAction::Claude),
-            ('2', SetupAction::Codex),
-            ('3', SetupAction::Both),
-        ] {
-            let mut s = state_needing_setup();
-            assert!(s.handle_key(key(c)), "key {:?} must be handled", c);
-            assert_eq!(s.install.setup_at_cursor(), expect);
-            assert!(s.install.setup_busy(), "an install must be in flight");
-        }
-    }
-
-    #[test]
-    fn setup_quit_hides_the_panel_without_installing() {
-        let mut s = state_needing_setup();
-        s.handle_key(key('q'));
-        assert!(s.hidden);
-        assert!(!s.install.setup_busy(), "quit must not install anything");
-    }
-
-    #[test]
-    fn setup_enter_runs_the_highlighted_action() {
-        let mut s = state_needing_setup();
-        s.handle_key(key('j'));
-        assert_eq!(s.install.setup_at_cursor(), SetupAction::Codex);
-        s.handle_key(KeyWithModifier::new(BareKey::Enter));
-        assert_eq!(s.install.state(Target::Codex), InstallState::Busy);
-        assert_eq!(
-            s.install.state(Target::Claude),
-            InstallState::Absent,
-            "only the highlighted target is touched"
-        );
-    }
-
-    /// The setup screen must swallow `x` rather than kill a pane.
-    #[test]
-    fn setup_screen_swallows_list_keys() {
-        let mut s = state_needing_setup();
-        assert!(!s.handle_key(key('x')), "x is not a setup action");
-        assert_eq!(s.kill_armed, None);
-        assert!(!s.install.setup_busy());
-    }
-
-    #[test]
-    fn i_still_reaches_the_full_install_screen_from_setup() {
-        let mut s = state_needing_setup();
-        s.handle_key(key('i'));
-        assert!(s.install.open);
-        assert!(!s.showing_setup());
     }
 
     fn args_map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -866,7 +600,6 @@ mod tests {
         }
         assert_eq!(s.reply.as_ref().map(|r| r.text.as_str()), Some("xdqin"));
         assert_eq!(s.kill_armed, None, "x must not arm a kill while typing");
-        assert!(!s.install.open, "i must not open the install screen while typing");
         assert_eq!(s.agents.len(), 1);
     }
 
@@ -1034,16 +767,6 @@ mod tests {
             Some("replied from panel"),
             "an agent mid-turn must not be typed into"
         );
-    }
-
-    #[test]
-    fn install_screen_swallows_navigation_keys_from_the_agent_list() {
-        let mut s = state_with_one_agent();
-        s.selected = 0;
-        s.handle_key(key('i'));
-        s.handle_key(key('j'));
-        assert_eq!(s.selected, 0, "j moves the install cursor, not the agent cursor");
-        assert_eq!(s.install.target_at_cursor(), crate::install::Target::Codex);
     }
 
     /// Rows past 9 have a number on screen that no single key can reach, so the

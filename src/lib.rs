@@ -4,7 +4,6 @@ mod agent;
 mod discover;
 mod find;
 mod host;
-mod install;
 mod keys;
 mod notify;
 mod plugin;
@@ -21,6 +20,9 @@ pub use state::State;
 pub fn sanitize_session_for_test(name: &str) -> String {
     agent::sanitize_session(name)
 }
+
+/// Tags `run_command` results so runtime probes are not confused with another command's.
+pub(crate) const CTX_KEY: &str = "zj-agent-mob";
 
 pub(crate) const SPINNER: [&str; 10] = [
     "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}",
@@ -199,25 +201,10 @@ pub mod testing {
         }
 
         /// Puts the panel into one of its modal screens, by the same route a
-        /// user takes: the install and setup screens own the whole screen, the
-        /// reply editor is a text field, and a jump count swallows digits.
+        /// user takes: the reply editor is a text field, and a jump count
+        /// swallows digits.
         pub fn enter_mode(&mut self, mode: &str) {
             match mode {
-                "install" => {
-                    self.state.install.open = true;
-                }
-                "setup" => {
-                    let ctx: BTreeMap<String, String> = [(
-                        crate::install::CTX_KEY.to_string(),
-                        crate::install::CTX_STATUS.to_string(),
-                    )]
-                    .into_iter()
-                    .collect();
-                    self.state
-                        .install
-                        .on_command_result(Some(0), "claude=absent\ncodex=absent\n", "", &ctx);
-                    self.state.agents.clear();
-                }
                 "reply" => {
                     self.state.begin_reply();
                 }

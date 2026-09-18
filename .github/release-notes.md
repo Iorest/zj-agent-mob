@@ -1,57 +1,46 @@
-The panel now updates itself. When a newer release is out, a line shows up in the footer:
+# Release notes
 
-```
-update available: v0.12.0 (press U)
-```
+## v0.13.0
 
-Press <kbd>U</kbd> and the panel downloads the release, swaps the wasm, hook script and installer into place, and reloads itself. No shell, no reinstall, no leaving Zellij. This should be the last release you install by hand.
+This release presents zj-agent-mob as a general coding-agent monitor rather
+than a client-specific integration.
 
-## How it works
+### Highlights
 
-On load the panel asks the installed `install.sh` for the latest tag:
+- Added the recommended Python hook entry point at
+  `scripts/zj-agent-mob-hook.py`; the compatible POSIX shell hook remains at
+  `scripts/zj-agent-mob-hook.sh`.
+- Normalized common JSON event, session, workspace, tool, model, usage, and
+  context fields across coding-agent integrations for both hooks.
+- Added `claude`, `codex`, and `codebuddy` tool labels without making the panel
+  depend on one agent vendor.
+- Preserved cross-session status, atomic per-user spool records, urgency fan-out,
+  task summaries, tool timing, notifications, permission prompts, and queued
+  follow-ups.
+- Documented manual hook configuration and a minimal integration shape for each
+  supported agent.
 
-```sh
-~/.config/zj-agent-mob/install.sh check-update
-```
+### Configuration
 
-The answer is cached for six hours in `~/.config/zj-agent-mob/update-check`, so ten sessions starting at once make one request. <kbd>U</kbd> then runs `install.sh --version <tag> plugin` and reloads the plugin once it exits cleanly. A failed update leaves the running version alone and prints the first error line in the footer; <kbd>U</kbd> retries.
+1. Download the release's `zj-agent-mob.wasm`, `zj-agent-mob-hook.py`, and
+   `zj-agent-mob-hook.sh` assets.
+2. Copy `zj-agent-mob.wasm` to
+   `~/.config/zellij/plugins/zj-agent-mob.wasm`.
+3. Copy one hook to `~/.config/zj-agent-mob/` and make it executable. Python is
+   recommended for new integrations; the shell hook remains supported.
+4. Add a `LaunchOrFocusPlugin` keybinding in Zellij.
+5. Configure each agent to run one of:
 
-Some details worth knowing:
+   ```sh
+   env ZJ_AGENT_TOOL=<agent-name> \
+     python3 "$HOME/.config/zj-agent-mob/zj-agent-mob-hook.py"
+   # Or: env ZJ_AGENT_TOOL=<agent-name> \
+   #   "$HOME/.config/zj-agent-mob/zj-agent-mob-hook.sh"
+   ```
 
-- Updates never touch your agent hook settings. If you deliberately hooked only Claude or only Codex, it stays that way.
-- Other Zellij sessions keep the old code until they reload. Their next <kbd>U</kbd> finds the files already current and just reloads.
-- The install screen (<kbd>i</kbd>) now shows the running version in its header.
-- Rather not have the panel phone GitHub? Turn it off in the plugin config:
+   See [setup](../docs/setup.md#agent-hook-integration) for the smallest
+   Claude Code, Codex, and CodeBuddy snippets.
 
-```kdl
-LaunchOrFocusPlugin "file:~/.config/zellij/plugins/zj-agent-mob.wasm" {
-    floating true
-    check_updates false
-}
-```
-
-## Installer fixes
-
-Two `init.sh` bugs the update path would have tripped over, fixed for manual installs too:
-
-- A from-release run used to copy its stale self over `~/.config/zj-agent-mob/install.sh` forever; it now fetches the installer from the release like everything else.
-- The wasm is swapped in with a rename instead of a plain `cp`, so a reload can never catch it half-written and two sessions updating at once cannot race.
-
-## Upgrading
-
-One last time by hand:
-
-```sh
-curl -fsSL https://github.com/mohseenrm/zj-agent-mob/releases/download/v0.12.0/init.sh | sh
-```
-
-Then reload the plugin, since Zellij caches compiled builds:
-
-```sh
-zellij action launch-or-focus-plugin --skip-plugin-cache --floating \
-  "file:$HOME/.config/zellij/plugins/zj-agent-mob.wasm"
-```
-
-The hook script is unchanged from v0.11.x, so running agents don't need restarting.
-
-**Full changelog:** https://github.com/mohseenrm/zj-agent-mob/compare/v0.11.1...v0.12.0
+Existing agent sessions must be restarted after changing hook settings. The
+hook intentionally fails open: malformed events, missing tools, and pipe errors
+never block an agent turn. It only reports agents running in a Zellij pane.

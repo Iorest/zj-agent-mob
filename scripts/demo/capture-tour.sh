@@ -328,8 +328,8 @@ while [ "$_i" -lt 240 ]; do
   rm -f /tmp/zj-tour-warm.txt
   za dump-screen --path /tmp/zj-tour-warm.txt >/dev/null 2>&1 || true
   # Grant the plugin permission if this build has none. Zellij keys it by
-  # plugin path in the cache dir, so `reinstall-local.sh` drops it and the
-  # panel comes up asking instead of rendering.
+  # plugin path in the cache dir, so a fresh plugin path can make the panel
+  # come up asking instead of rendering.
   if [ -s /tmp/zj-tour-warm.txt ] && grep -q 'Allow?' /tmp/zj-tour-warm.txt 2>/dev/null; then
     # The permission prompt is not listed as a plugin pane until it is granted.
     # Send the answer while the launch modal still owns input.
@@ -443,9 +443,8 @@ key x 0.6 14
 key Esc 0.5 6
 
 # ------------------------------------------------------------------ act 9
-# The install screen: Claude Code and Codex hooks toggle independently.
-key i 0.8 16
-key i 0.6 4
+# Return to the normal list after the interactive actions.
+key q 0.6 4
 
 # ------------------------------------------------------------------ act 10
 # The beat: an agent two sessions away blocks and sorts to the top of a panel

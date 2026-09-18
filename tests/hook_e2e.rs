@@ -1,4 +1,4 @@
-//! End-to-end tests for `scripts/zj-agent-mob-hook.sh`, the seam between a real
+//! End-to-end tests for `scripts/zj-agent-mob-hook.py`, the seam between a real
 //! agent and the plugin: hook-event JSON in, a `zellij pipe --args` call out.
 //! The unit suite starts downstream of it, from an already-parsed pipe message.
 //!
@@ -121,6 +121,19 @@ fn hook_path() -> PathBuf {
     repo_root().join("scripts/zj-agent-mob-hook.sh")
 }
 
+fn python_hook_path() -> PathBuf {
+    repo_root().join("scripts/zj-agent-mob-hook.py")
+}
+
+fn python_bin() -> PathBuf {
+    let output = Command::new("python3")
+        .arg("-c")
+        .arg("import sys; print(sys.executable)")
+        .output()
+        .expect("python3 is required for the Python hook tests");
+    PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
+}
+
 /// Writes the `zellij` stub: records argv, one invocation per line.
 fn write_stub(bin: &Path) {
     fs::create_dir_all(bin).expect("create bin dir");
@@ -191,12 +204,14 @@ impl Hook {
             std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
         );
 
-        let mut cmd = Command::new("sh");
-        cmd.arg(hook_path())
+        let mut cmd = Command::new(python_bin());
+        cmd.arg(python_hook_path())
             .env_clear()
             .env("PATH", &path_var)
             .env("ZJ_TEST_CAPTURE", &capture)
+            .env("ZELLIJ", "0")
             .env("ZELLIJ_PANE_ID", "3")
+            .env("ZJ_AGENT_TOOL", "claude")
             .env("ZJ_AGENT_PLUGIN", "file:/plugin.wasm")
             // Keep the real spool and real HOME out of every run by default.
             .env("HOME", self.sandbox.path("home"))
@@ -490,6 +505,23 @@ fn a_changed_cwd_rederives_the_identity() {
 fn the_tool_can_be_overridden() {
     let r = Hook::new().env("ZJ_AGENT_TOOL", "codex").run(&ev("Stop"));
     assert_eq!(r.field("tool"), "codex");
+}
+
+#[test]
+fn codebuddy_uses_the_same_status_contract() {
+    let h = Hook::new();
+    let json = serde_json::json!({
+        "hook_event_name": "PermissionRequest",
+        "toolCall": {"name": "shell", "args": {"command": "printf ok"}},
+    })
+    .to_string();
+    let r = h
+        .env("ZJ_AGENT_TOOL", "codebuddy")
+        .env("ZJ_AGENT_APPROVE", "0")
+        .run(&json);
+    assert_eq!(r.field("tool"), "codebuddy");
+    assert_eq!(r.field("status"), "waiting");
+    assert_eq!(r.field("block"), "tool");
 }
 
 #[test]

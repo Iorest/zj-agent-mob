@@ -23,7 +23,7 @@ FRAMES=${ZJ_TOUR_FRAMES:-/tmp/zj-tour-frames}
 WASM=${ZJ_TOUR_WASM:-$HOME/.config/zellij/plugins/zj-agent-mob.wasm}
 
 [ -f "$WASM" ] || {
-  echo "plugin not installed: cargo build --release --target wasm32-wasip1 && ./init.sh" >&2
+  echo "plugin not installed: cargo build --release --target wasm32-wasip1 && mkdir -p ~/.config/zellij/plugins && cp target/wasm32-wasip1/release/zj-agent-mob.wasm ~/.config/zellij/plugins/" >&2
   exit 1
 }
 command -v python3 >/dev/null 2>&1 || { echo "python3 not found" >&2; exit 1; }

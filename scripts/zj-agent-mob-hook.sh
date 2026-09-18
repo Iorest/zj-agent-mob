@@ -1,12 +1,12 @@
 #!/bin/sh
-# zj-agent-mob hook: reports Claude Code / Codex agent status to the zellij plugin.
+# zj-agent-mob hook: reports coding-agent status to the zellij plugin.
 #
-# Installed by init.sh into Claude Code's settings.json and Codex's hooks.json.
-# Receives the hook event as JSON on stdin. Always exits 0 so it can never block
+# Configure this command directly in the agent's hook settings. It receives the
+# hook event as JSON on stdin and always exits 0 so it can never block
 # or fail an agent turn.
 #
 # Env:
-#   ZJ_AGENT_TOOL        claude | codex   (default: claude)
+#   ZJ_AGENT_TOOL        integration name (for example claude, codex, codebuddy)
 #   ZJ_AGENT_HEARTBEAT   0 disables PreToolUse/PostToolUse status refresh
 #   ZJ_AGENT_PLUGIN      override plugin path
 #   ZJ_AGENT_DEBUG       1 logs to ~/.cache/zj-agent-mob/hook.log
@@ -435,6 +435,14 @@ if [ "$status" = ended ] && [ -n "$SESSION" ]; then
   rm -f "$(spool_dir)/$SESSION.$ZELLIJ_PANE_ID" "$(spool_dir)/git.$SESSION.$ZELLIJ_PANE_ID" 2>/dev/null || true
 fi
 
+permission_output() {
+  if [ "$TOOL" = codebuddy ]; then
+    printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","permissionDecision":"%s"}}\n' "$1"
+  else
+    printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"%s"}}}\n' "$1"
+  fi
+}
+
 # Answering a permission prompt from the panel.
 #
 # The plugin cannot write to stdin of an already-running process, so the verdict
@@ -455,13 +463,13 @@ if [ "$event" = PermissionRequest ] && [ "${ZJ_AGENT_APPROVE:-1}" = "1" ]; then
       [ "$rule_tool" = "$tool_name" ] || continue
       case "$rule_rest" in
         "$rule_tool")
-          printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}\n'
+          permission_output allow
           exit 0 ;;
       esac
       rule_prefix=${rule_rest#"$rule_tool" }
       case "$tool_arg" in
         "$rule_prefix"*)
-          printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}\n'
+          permission_output allow
           exit 0 ;;
       esac
     done < "$rules_file"
@@ -492,10 +500,10 @@ if [ "$event" = PermissionRequest ] && [ "${ZJ_AGENT_APPROVE:-1}" = "1" ]; then
       rm -f "$vfile" 2>/dev/null || true
       case "$verdict" in
         allow)
-          printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}\n'
+          permission_output allow
           exit 0 ;;
         deny)
-          printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}\n'
+          permission_output deny
           exit 0 ;;
       esac
       break

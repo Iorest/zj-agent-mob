@@ -74,10 +74,11 @@ hook() {
   cat > "$WORK/fire.sh" <<FIRE
 #!/bin/sh
 printf '%s' '$_status_json' \
-  | ZJ_AGENT_PLUGIN="$PLUGIN" \
+  | ZJ_AGENT_TOOL=claude \
+    ZJ_AGENT_PLUGIN="$PLUGIN" \
     ZJ_AGENT_SPOOL_DIR="$WORK/spool" \
     ZJ_AGENT_FANOUT=0 \
-    sh "$ROOT/scripts/zj-agent-mob-hook.sh"
+    python3 "$ROOT/scripts/zj-agent-mob-hook.py"
 # The pane must outlive the hook: closing it takes the row with it.
 sleep 300
 FIRE
@@ -140,21 +141,17 @@ assert_panel "panel renders after the permission grant"
 
 echo
 echo "footer alignment"
-zj action write-chars "i" >/dev/null 2>&1 || true
-sleep 2
 screen=$(dump)
-body_line=$(printf '%s\n' "$screen" | awk '/Plugin wasm/ { print NR; exit }')
+body_line=$(printf '%s\n' "$screen" | awk '/zj-agent-mob/ { print NR; exit }')
 rule_line=$(printf '%s\n' "$screen" | awk '/^─+$/ { line = NR } END { print line }')
-hint_line=$(printf '%s\n' "$screen" | awk '/c claude/ { print NR; exit }')
+hint_line=$(printf '%s\n' "$screen" | awk '/(↵ jmp|t sh|y yes|a approve)/ { print NR; exit }')
 if [ -n "$body_line" ] && [ -n "$rule_line" ] && [ -n "$hint_line" ] \
-  && [ "$rule_line" -ge $((body_line + 2)) ] && [ "$hint_line" -gt "$rule_line" ]; then
-  ok "install hints are anchored below unused pane space"
+  && [ "$rule_line" -gt "$body_line" ] && [ "$hint_line" -gt "$rule_line" ]; then
+  ok "runtime footer is anchored below the agent list"
 else
-  bad "install hints are anchored below unused pane space" \
+  bad "runtime footer is anchored below the agent list" \
     "body=${body_line:-missing} rule=${rule_line:-missing} hints=${hint_line:-missing}: $screen"
 fi
-zj action write 27 >/dev/null 2>&1 || true
-sleep 1
 
 echo
 echo "hook -> panel, for real"

@@ -93,12 +93,8 @@ fullscreen_one "$P1"
 
 # ---------------------------------------------------------- act 0: first open
 act "0 setup"
-# The panel on first open. On a machine with no hooks installed this is the
-# setup screen ("Hooks are not installed", 1/2/3 to install); the recording
-# machine has them installed, so it opens on the empty list instead. Act 7
-# shows the install screen itself, which is the same install path and is real
-# either way - faking an uninstalled machine here would mean uninstalling the
-# recorder's own hooks mid-render.
+# The panel on first open. It starts with an empty list until a configured
+# agent hook reports its first event.
 show_panel
 sleep 3
 
@@ -107,9 +103,9 @@ act "1 appear"
 # One agent starts a turn.
 emit "pane_id=$P1,session=$ZJ_SESSION,tool=claude,status=working,task=Refactor the auth middleware,cwd=~/repo/web,detail=Edit src/auth/middleware.rs"
 
-# NOT "claude": the empty-state placeholder reads "Start claude or codex in a
-# pane", so that needle matches a panel with nothing in it. The counter line only
-# renders once a row exists.
+# NOT "agent": the empty-state placeholder mentions "coding agent", so that
+# needle matches a panel with nothing in it. The counter line only renders once
+# a row exists.
 wait_for "working" || exit 1
 sleep 1.5
 
@@ -200,12 +196,7 @@ act "6 kill"
 key "x" 2.5
 key "Esc" 1.5
 
-# ------------------------------------------------------- act 7: install screen
-act "7 install"
-key "i" 3
-key "i" 2            # back to the list
-
-# --------------------------------------------- act 8: agents in other sessions
+# --------------------------------------------- act 7: agents in other sessions
 act "8 cross-session"
 # Two more Zellij sessions, each with its own agents. Note the pane ids: every
 # session hands out 0, 1, 2 - so `pane 1` is ambiguous across three sessions,

@@ -1,131 +1,57 @@
 # Setup
 
-- [Install](#install)
-  - [From a release](#from-a-release)
-  - [From source](#from-source)
-  - [Reinstalling from a checkout](#reinstalling-from-a-checkout)
-- [The install screen](#the-install-screen)
+This project has two independent pieces:
+
+1. a Zellij WASI plugin (`zj-agent-mob.wasm`), and
+2. a process hook that translates agent events into plugin status updates.
+
+`scripts/zj-agent-mob-hook.py` is the recommended entry point for new
+integrations. `scripts/zj-agent-mob-hook.sh` remains a supported POSIX shell
+entry point with the same behavior. Hooks are configured manually so either
+entry point can be used by any coding agent that sends JSON on stdin.
+
+- [Install the plugin and hook](#install-the-plugin-and-hook)
 - [Register the plugin with Zellij](#register-the-plugin-with-zellij)
+- [Agent hook integration](#agent-hook-integration)
+  - [Claude Code](#claude-code)
+  - [Codex](#codex)
+  - [CodeBuddy](#codebuddy)
 - [Configuration](#configuration)
 - [The fleet summary in your status bar](#the-fleet-summary-in-your-status-bar)
-  - [The format contract](#the-format-contract)
-  - [Worked examples](#worked-examples)
+- [Hook environment](#hook-environment)
+- [Build from source](#build-from-source)
 
-## Install
+## Install the plugin and hook
 
-Two options: let `init.sh` download a release for you, or build the wasm yourself. `jq` is required either way.
-
-### From a release
-
-Each release ships three assets: `init.sh`, `zj-agent-mob-hook.sh`, and `zj-agent-mob.wasm`. The installer fetches the two it needs from the same tag it was downloaded from, so one command is the whole install:
-
-```sh
-curl -fsSL https://github.com/mohseenrm/zj-agent-mob/releases/download/v0.12.0/init.sh | sh
-```
-
-No clone, no Rust toolchain, no manual `target/` directory. To inspect the script first:
+Download `zj-agent-mob.wasm`, `zj-agent-mob-hook.py`, and
+`zj-agent-mob-hook.sh` from the [releases page](https://github.com/mohseenrm/zj-agent-mob/releases).
+Copy the plugin and one hook to paths that your Zellij config and agent
+settings can share:
 
 ```sh
-curl -fsSL -O https://github.com/mohseenrm/zj-agent-mob/releases/download/v0.12.0/init.sh
-less init.sh && sh init.sh
+mkdir -p ~/.config/zellij/plugins ~/.config/zj-agent-mob
+cp zj-agent-mob.wasm ~/.config/zellij/plugins/zj-agent-mob.wasm
+cp zj-agent-mob-hook.py ~/.config/zj-agent-mob/zj-agent-mob-hook.py
+chmod +x ~/.config/zj-agent-mob/zj-agent-mob-hook.py
+# Or use the POSIX shell hook instead:
+# cp zj-agent-mob-hook.sh ~/.config/zj-agent-mob/zj-agent-mob-hook.sh
+# chmod +x ~/.config/zj-agent-mob/zj-agent-mob-hook.sh
 ```
 
-The URL names an explicit tag rather than `latest` on purpose. The installer, hook script, and wasm are versioned together, so a moving `latest` could pair a new plugin with an older hook on disk, and Zellij caches remote plugins by URL, which would keep serving a stale binary. Grab the newest tag from the [releases page](https://github.com/mohseenrm/zj-agent-mob/releases) and substitute it.
+From a source checkout, use either script under `scripts/` as the hook source.
+The Python hook is recommended for new integrations; both hooks expose the same
+status, spool, notification, permission, follow-up, and peer-context behavior.
 
-Pin a different release with `--version`:
-
-```sh
-sh init.sh --version v0.2.0
-```
-
-Naming a version always downloads that release, even if a local build is present, so you get what you asked for.
-
-### From source
-
-```sh
-rustup target add wasm32-wasip1
-cargo build --release --target wasm32-wasip1
-./init.sh
-```
-
-From a clone with a local build, `init.sh` downloads nothing.
-
-`init.sh` installs the hook script, copies the plugin, and merges hook entries into `~/.claude/settings.json` and `~/.codex/hooks.json` without disturbing hooks you already have. It is idempotent, so re-running it is safe.
-
-```sh
-./init.sh                  # install everything
-./init.sh install claude   # just Claude Code's hooks
-./init.sh install codex    # just Codex's hooks
-./init.sh install plugin   # just copy the built wasm
-./init.sh status           # what is installed right now
-./init.sh --dry-run        # preview, write nothing (never downloads)
-./init.sh uninstall        # remove exactly what was installed
-./init.sh uninstall codex  # remove one target only
-./init.sh --from-release   # prefer the released wasm over a local build
-./init.sh --version v0.2.0 # pin a release; implies --from-release
-./init.sh --no-download    # fail rather than fetch anything (offline)
-```
-
-By default the installer downloads only what the source tree does not already provide: from a clone with a built wasm it stays entirely local, and from a bare `init.sh` it fetches the hook and plugin. `--from-release` and `--no-download` force each end of that.
-
-> [!IMPORTANT]
-> Restart any running `claude` / `codex` sessions after installing. Hooks are read at session start, so existing sessions won't report status.
-
-### Reinstalling from a checkout
-
-`init.sh` always overwrites the hook and the wasm, but two things survive it and
-will keep you on old behaviour:
-
-- **Zellij caches compiled plugins.** A new wasm on disk is not the wasm a
-  running session has loaded.
-- **Spool records outlive a hook change.** A record written by an older hook
-  stays in `$TMPDIR` until it is swept.
-
-`scripts/reinstall-local.sh` does the whole cycle, which is what you want when
-you are moving the same checkout across machines:
-
-```sh
-./scripts/reinstall-local.sh          # build, install, clear both caches
-./scripts/reinstall-local.sh --check  # is the install current? exits 1 if not
-```
-
-`--check` compares the installed wasm and hook against the checkout and prints
-`ok` or `STALE` for each, so you can tell at a glance whether a machine is
-actually running what you think it is.
-
-Afterwards, restart your agents *and* start a new Zellij session - a new session
-is the reliable way to make Zellij load the new plugin.
-
-## The install screen
-
-After the first run you can do all of this from inside the panel instead: press <kbd>i</kbd> for the install screen.
-
-![The install screen with Claude Code hooks and the plugin installed, Codex hooks absent](img/05-install-partial.png)
-
-With hooks installed but no agent running yet, the panel says so rather than
-looking broken - start `claude` or `codex` in any pane and it fills in:
-
-![The empty state telling you to start claude or codex in a pane](img/00-empty.png)
-
-Each row toggles: pressing its key installs when absent and uninstalls when present.
-
-If neither agent is hooked, the panel skips the empty state and offers the same install directly:
-
-![The setup screen listing four quick actions: install for Claude Code, for Codex, for both, or quit](img/01-setup.png)
-
-The screen shells out to the copy of the installer that `init.sh` leaves at `~/.config/zj-agent-mob/install.sh`, so it works regardless of where you cloned the repo. This needs Zellij's "Run commands" permission, which the plugin requests on first load.
+The Python hook requires Python 3.9 or newer; the shell hook requires a POSIX
+shell. Both require `zellij` on `PATH` when an agent is running inside Zellij.
+The Python hook does not require `jq`.
 
 ## Register the plugin with Zellij
 
-`init.sh` copies the plugin to `~/.config/zellij/plugins/zj-agent-mob.wasm`, but Zellij still needs to know how to open it.
-
-### As a keybinding
-
-Add to `~/.config/zellij/config.kdl`:
+Add a keybinding to `~/.config/zellij/config.kdl`:
 
 ```kdl
 keybinds {
-    // Ctrl s already enters Session mode; c opens the panel from there.
     session {
         bind "c" {
             LaunchOrFocusPlugin "file:~/.config/zellij/plugins/zj-agent-mob.wasm" {
@@ -138,26 +64,15 @@ keybinds {
 }
 ```
 
-Press <kbd>Ctrl</kbd>+<kbd>s</kbd> then <kbd>c</kbd> to open the panel.
+Press <kbd>Ctrl</kbd>+<kbd>s</kbd> then <kbd>c</kbd>. To use one chord from every
+mode, put the same `LaunchOrFocusPlugin` action in `shared_except "locked"`.
+Validate the configuration with:
 
-To bind a single chord instead, put it in `shared_except` so it works from any mode:
-
-```kdl
-keybinds {
-    shared_except "locked" {
-        bind "Ctrl a" {
-            LaunchOrFocusPlugin "file:~/.config/zellij/plugins/zj-agent-mob.wasm" {
-                floating true
-                move_to_focused_tab true
-            }
-        }
-    }
-}
+```sh
+zellij setup --check
 ```
 
-### In a layout
-
-To have the panel present from the start, add it to `~/.config/zellij/layouts/default.kdl`:
+A layout can open the panel at session start:
 
 ```kdl
 layout {
@@ -173,121 +88,170 @@ layout {
 }
 ```
 
-Validate whatever you write with:
+## Agent hook integration
+
+The hook reads one JSON object from stdin and exits `0` in every failure case.
+Set `ZJ_AGENT_TOOL` explicitly; an empty value is ignored so that an unlabelled
+integration cannot create misleading rows.
+
+Use this command, with an absolute path if the agent does not expand `$HOME`:
 
 ```sh
-zellij setup --check
+env ZJ_AGENT_TOOL=<agent-name> \
+  python3 "$HOME/.config/zj-agent-mob/zj-agent-mob-hook.py"
+# Or: env ZJ_AGENT_TOOL=<agent-name> \
+#   "$HOME/.config/zj-agent-mob/zj-agent-mob-hook.sh"
 ```
+
+Register the selected command for the agent's lifecycle and tool events. The hook recognizes
+`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
+`PostToolUseFailure`, `PermissionRequest`, `Notification`, `Stop`,
+`StopFailure`, `PreCompact`, `PostCompact`, `SubagentStart`, `SubagentStop`,
+`TaskCreated`, `TaskCompleted`, and `SessionEnd`. Unknown events are ignored.
+
+The following snippets show only the command integration. Keep your existing
+agent settings and merge the event entries according to that agent's current
+official settings schema. The examples use Python; replace the command with the
+shell entry point above when preferred.
+
+### Claude Code
+
+In `~/.claude/settings.json`, add the selected hook command to the events you
+want to report. The example uses Python; replace it with the shell command if
+preferred:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{
+      "hooks": [{
+        "type": "command",
+        "command": "env ZJ_AGENT_TOOL=claude python3 $HOME/.config/zj-agent-mob/zj-agent-mob-hook.py",
+        "async": true
+      }]
+    }]
+  }
+}
+```
+
+Repeat the entry for the other lifecycle events. Permission decisions and
+follow-ups use synchronous `UserPromptSubmit`, `PermissionRequest`, or `Stop`
+hooks where the host supports synchronous hooks; do not make every event
+synchronous.
+
+### Codex
+
+In `~/.codex/hooks.json`, use the selected command with
+`ZJ_AGENT_TOOL=codex`. The example uses Python; replace it with the shell
+command if preferred:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{
+      "hooks": [{
+        "type": "command",
+        "command": "env ZJ_AGENT_TOOL=codex python3 $HOME/.config/zj-agent-mob/zj-agent-mob-hook.py"
+      }]
+    }]
+  }
+}
+```
+
+Repeat the entry for `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
+`PermissionRequest`, `Stop`, and `SessionEnd` when those events are available
+in the installed Codex version.
+
+### CodeBuddy
+
+CodeBuddy integrations are manual. In `~/.codebuddy/settings.json`, add the
+selected hook command in the event-hook section provided by your CodeBuddy
+version. The example uses Python; replace it with the shell command if
+preferred:
+
+```json
+{
+  "hooks": {
+    "SessionStart": {
+      "command": "env ZJ_AGENT_TOOL=codebuddy python3 $HOME/.config/zj-agent-mob/zj-agent-mob-hook.py"
+    }
+  }
+}
+```
+
+Keep the command shape and `ZJ_AGENT_TOOL=codebuddy`; adapt only the surrounding
+key names to the current CodeBuddy hook schema. Consult each agent's current
+official documentation for its settings path, event names, and schema. CodeBuddy
+is process-discovered
+by the plugin, but it cannot report live status until its hook calls this
+entry point.
+
+### Verify an integration
+
+Start a new agent session inside a Zellij pane, then check that the panel shows
+an `idle` or `working` row. For a direct smoke test, send a representative
+payload from the agent's pane:
+
+```sh
+printf '%s\n' '{"event":"SessionStart","session_id":"test","cwd":"'$PWD'"}' \
+  | env ZJ_AGENT_TOOL=test python3 ~/.config/zj-agent-mob/zj-agent-mob-hook.py
+```
+
+The hook silently does nothing outside Zellij or when required environment
+variables are absent. Set `ZJ_AGENT_DEBUG=1` to write a diagnostic line per
+event to `~/.cache/zj-agent-mob/hook.log`.
 
 ## Configuration
 
-Plugin config goes in the same block as the launch action:
+Plugin options go in the same block as `LaunchOrFocusPlugin`:
 
 ```kdl
 LaunchOrFocusPlugin "file:~/.config/zellij/plugins/zj-agent-mob.wasm" {
     floating true
     move_to_focused_tab true
     popup_on_waiting true
+    discover true
+    notify "waiting,failed"
+    notify_cooldown 60
+    notify_sound false
 }
 ```
 
 | Key | Default | Meaning |
 |---|---|---|
-| `popup_on_waiting` | `true` | Auto-show the panel when an agent needs input. Set `false` to only ever open it yourself |
-| `discover` | `true` | Scan process environments for agents that have not fired a hook yet, including ones in other sessions. Set `false` to show only agents that have reported |
-| `notify` | `waiting,failed` | Which transitions raise a desktop notification. Any of `waiting`, `idlewait`, `failed`, `done`, comma-separated. `""` disables them |
-| `notify_cooldown` | `60` | Seconds before the same agent may notify again, so a flapping row cannot spam you |
-| `notify_sound` | `false` | Play a sound with the notification |
-| `summary_file` | unset | Write the fleet summary here on every change, for a status bar to render. Also writes `<path>.kv` for parsing. Unset means nothing is published. See [the fleet summary](#the-fleet-summary-in-your-status-bar) |
-| `check_updates` | `true` | Check GitHub for a newer release on load, via the installed `install.sh`. Set `false` to never touch the network. See [updating](#updating) |
+| `popup_on_waiting` | `true` | Show the panel when an agent needs input |
+| `discover` | `true` | Scan process environments for agents that have not fired a hook |
+| `notify` | `waiting,failed` | Comma-separated statuses that raise notifications; `""` disables them |
+| `notify_cooldown` | `60` | Seconds before one agent may notify again |
+| `notify_sound` | `false` | Play a sound with notifications |
+| `summary_file` | unset | Publish a prose and `.kv` fleet summary for status bars |
 
-## Updating
-
-On load the panel asks the installed `~/.config/zj-agent-mob/install.sh` for the
-latest release tag (cached for six hours, so many sessions loading at once make
-one request). When a newer release exists a dim footer line appears:
-
-```
-update available: v0.12.0 (press U)
-```
-
-Press <kbd>U</kbd> (from the list or the install screen) and the panel drives
-`install.sh --version <tag> plugin`, which downloads the new wasm, hook script
-and installer, swaps them into place, and reloads the plugin in this session.
-Agent hooks in your settings files are never touched by an update.
-
-Other Zellij sessions keep running the old code until their own reload; their
-next <kbd>U</kbd> finds the files already current and just reloads. Running
-agents pick up the new hook script on their next hook fire, and the current
-version is always shown in the install screen header (<kbd>i</kbd>).
-
-Set `check_updates false` to disable the check entirely; `install.sh --version
-vX.Y.Z` from a shell still updates (or downgrades) manually.
+Permission prompts are enabled by default when the integrated agent supports
+synchronous permission hooks. Set `ZJ_AGENT_APPROVE=0` in that agent's
+environment to disable panel approval. The `A` key appends allow-only rules to
+`~/.config/zj-agent-mob/approve.rules`.
 
 ## The fleet summary in your status bar
 
-Set `summary_file` and the panel publishes the fleet's state on every change,
-for anything outside Zellij to render. This is the difference between a panel
-you open and a number that is always in front of you.
-
-Configuration goes wherever you already declare the plugin - in a keybinding:
+Set `summary_file` in the plugin block:
 
 ```kdl
-keybinds {
-    shared_except "locked" {
-        bind "Ctrl a" {
-            LaunchOrFocusPlugin "file:~/.config/zellij/plugins/zj-agent-mob.wasm" {
-                floating true
-                summary_file "/tmp/zj-agent-mob.summary"
-            }
-        }
-    }
-}
+summary_file "/tmp/zj-agent-mob.summary"
 ```
 
-or in a layout:
+The plugin atomically writes:
 
-```kdl
-floating_panes {
-    pane {
-        plugin location="file:~/.config/zellij/plugins/zj-agent-mob.wasm" {
-            summary_file "/tmp/zj-agent-mob.summary"
-        }
-    }
-}
-```
+| File | Contents |
+|---|---|
+| `$summary_file` | `2 waiting · 1 working`, empty when nothing needs attention |
+| `$summary_file.kv` | `failed=0 waiting=2 working=1 done=0 found=0 total=3` |
 
-Two files are written, both replaced atomically via `mv`, so a consumer polling
-them never reads a half-written count:
+The prose line is also sent as the `zj-agent-mob-summary` Zellij pipe. Neither
+file exists until the first publish, so consumers should handle a missing file.
 
-| File | Contents | For |
-|---|---|---|
-| `$summary_file` | `2 waiting · 1 working` | Rendering directly |
-| `$summary_file.kv` | `failed=0 waiting=2 working=1 done=0 found=0 total=3` | Parsing |
-
-A `zellij pipe --name zj-agent-mob-summary` also carries the prose line, for
-consumers that are themselves Zellij plugins.
-
-### The format contract
-
-Both lines are stable, and worth relying on:
-
-- **Prose** (`$summary_file`) lists only non-zero counts, in urgency order
-  (`failed`, `waiting`, `working`, `done`), joined by ` · `. It is **empty when
-  nothing needs you**, which is what keeps a status bar quiet at rest.
-- **Machine-readable** (`$summary_file.kv`) always carries **every** key, zeros
-  included, so `waiting=0` is never ambiguous with a key that was left out.
-  `waiting` folds in `idle-wait`; `working` folds in `compact`; `found` is
-  agents seen by the scan that have never reported; `total` is every row.
-
-Neither file exists until the first publish, so read defensively.
-
-### Worked examples
-
-**Starship** - a module that stays invisible when nothing needs you:
+For example, a Starship module can stay hidden when the file is empty:
 
 ```toml
-# ~/.config/starship.toml
 [custom.agents]
 command = "cat /tmp/zj-agent-mob.summary 2>/dev/null"
 when = "test -s /tmp/zj-agent-mob.summary"
@@ -296,52 +260,41 @@ style = "bold yellow"
 shell = ["sh", "-c"]
 ```
 
-**tmux** - the prose line, refreshed on tmux's own interval:
+## Hook environment
 
-```sh
-set -g status-right '#(cat /tmp/zj-agent-mob.summary 2>/dev/null) | %H:%M'
-```
-
-**Anything that needs a decision**, reading the `k=v` line rather than parsing
-prose. One field, no sourcing:
-
-```sh
-waiting=$(awk -v RS=' ' -F= '$1=="waiting"{print $2}' \
-  /tmp/zj-agent-mob.summary.kv 2>/dev/null)
-
-[ "${waiting:-0}" -gt 0 ] && printf 'agents blocked: %s\n' "$waiting"
-```
-
-**Zellij's own status bar** cannot shell out, so it reads the pipe rather than
-the file - see [how it works](how-it-works.md) for the pipe's shape.
-
-### Hook script environment
-
-Set these in the environment the *agent* runs in, not the panel's.
+Set these variables in the environment inherited by the agent, not in the
+plugin block:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ZJ_AGENT_TOOL` | `claude` | Which transcript reader to use (`claude` / `codex`) |
-| `ZJ_AGENT_HEARTBEAT` | `1` | Set `0` to skip `PreToolUse`/`PostToolUse` (halves hook volume) |
-| `ZJ_AGENT_APPROVE` | `1` | Set `0` to stop parking permission prompts in the panel for <kbd>a</kbd> / <kbd>r</kbd> |
-| `ZJ_AGENT_APPROVE_TIMEOUT` | `30` | Seconds a parked prompt waits before falling through to the agent's own prompt |
-| `ZJ_AGENT_APPROVE_RULES` | `~/.config/zj-agent-mob/approve.rules` | Rules that answer a prompt without asking. One `allow <tool> [arg-prefix]` per line; <kbd>A</kbd> appends one |
-| `ZJ_AGENT_FOLLOWUP` | `1` | Set `0` to stop delivering a follow-up queued with <kbd>f</kbd> when the turn ends |
-| `ZJ_AGENT_CONTEXT` | `1` | Set `0` to stop telling an agent about other agents working in the same directory |
-| `ZJ_AGENT_SLOW_TOOL` | `10` | Seconds a tool call must take before its duration is shown on the detail line |
-| `ZJ_AGENT_SPOOL` | `1` | Set `0` to stop writing the cross-session status file. Agents in other sessions then show `found` instead of live status |
-| `ZJ_AGENT_SPOOL_DIR` | `$TMPDIR/zj-agent-mob-<uid>/status` | Where status files are written. Created `0700`, since records contain task summaries |
-| `ZJ_AGENT_FANOUT` | `1` | Set `0` to stop piping `waiting` / `failed` / `done` straight to panels in other sessions. They then wait for the next poll instead |
-| `ZJ_AGENT_PLUGIN` | `file:~/.config/zellij/plugins/zj-agent-mob.wasm` | Plugin path |
-| `ZJ_AGENT_DEBUG` | `0` | Set `1` to log events to `~/.cache/zj-agent-mob/hook.log` |
+| `ZJ_AGENT_TOOL` | empty | Required tool label, such as `claude`, `codex`, or `codebuddy` |
+| `ZJ_AGENT_HEARTBEAT` | `1` | Set `0` to skip per-tool heartbeat events |
+| `ZJ_AGENT_APPROVE` | `1` | Set `0` to disable panel permission decisions |
+| `ZJ_AGENT_APPROVE_TIMEOUT` | `30` | Seconds a parked permission waits |
+| `ZJ_AGENT_APPROVE_RULES` | `~/.config/zj-agent-mob/approve.rules` | Allow-only rules file |
+| `ZJ_AGENT_FOLLOWUP` | `1` | Set `0` to disable queued follow-ups |
+| `ZJ_AGENT_CONTEXT` | `1` | Set `0` to disable same-directory peer context |
+| `ZJ_AGENT_SLOW_TOOL` | `10` | Seconds before a tool duration is shown |
+| `ZJ_AGENT_SPOOL` | `1` | Set `0` to disable cross-session records |
+| `ZJ_AGENT_SPOOL_DIR` | `$TMPDIR/zj-agent-mob-<uid>/status` | Override the status directory |
+| `ZJ_AGENT_FANOUT` | `1` | Set `0` to disable urgent cross-session fan-out |
+| `ZJ_AGENT_PLUGIN` | `file:~/.config/zellij/plugins/zj-agent-mob.wasm` | Override plugin path |
+| `ZJ_AGENT_DEBUG` | `0` | Set `1` to log hook events |
 
-### Installer environment
+The Python hook also accepts usage and context fields when present. The current
+plugin may ignore optional usage fields; they remain available to future plugin
+versions and other consumers.
 
-Mostly useful for testing against throwaway directories:
+## Build from source
 
-| Variable | Default |
-|---|---|
-| `ZJ_AGENT_HOOK_DIR` | `~/.config/zj-agent-mob` |
-| `ZJ_AGENT_PLUGIN_DIR` | `~/.config/zellij/plugins` |
-| `CLAUDE_CONFIG_DIR` | `~/.claude` |
-| `CODEX_HOME` | `~/.codex` |
+```sh
+rustup target add wasm32-wasip1
+cargo build --release --target wasm32-wasip1
+cp target/wasm32-wasip1/release/zj-agent-mob.wasm \
+  ~/.config/zellij/plugins/zj-agent-mob.wasm
+```
+
+Zellij needs the hyphenated **binary** artifact. The underscored library
+artifact is not a loadable plugin and causes `could not find exported function`.
+Start a new Zellij session after replacing the wasm if an existing session still
+shows the old behavior; Zellij keeps loaded plugin instances in memory.

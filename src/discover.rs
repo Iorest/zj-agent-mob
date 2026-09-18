@@ -12,11 +12,10 @@ use crate::host;
 
 pub(crate) const CTX_SCAN: &str = "discover-scan";
 
-/// Executable basenames treated as agents. Matched against the process's own
-/// name, not its command line: an agent started by typing `claude` into a shell
-/// is a child of that shell, so a command-line pattern anchored at the start
-/// misses it.
-const TOOLS: [&str; 2] = ["claude", "codex"];
+/// Canonical tool names accepted from process discovery. Claude and Codex match
+/// executable basenames; CodeBuddy is normalized from its Node launcher only
+/// after an exact launcher-path check in the scan script.
+const TOOLS: [&str; 3] = ["claude", "codex", "codebuddy"];
 
 /// One `ps` for every process, filtered in awk.
 ///
@@ -32,9 +31,23 @@ pub(crate) fn scan_script(tools: &[&str]) -> String {
     // One invocation for both sources: a second dispatch would double the poll
     // cost for data that is always consumed together.
     format!(
-        r#"ps axeww -o pid=,command= 2>/dev/null | awk '
+        r#"codebuddy_bin="${{CODEBUDDY_BIN:-$(command -v codebuddy 2>/dev/null || true)}}"
+[ -n "$codebuddy_bin" ] || codebuddy_bin=/opt/homebrew/bin/codebuddy
+ps axeww -o pid=,command= 2>/dev/null | awk -v codebuddy_bin="$codebuddy_bin" '
 {{
   cmd = $2; sub(/.*\//, "", cmd)
+  if (cmd == "node") {{
+    is_codebuddy = 0
+    for (i = 3; i <= NF; i++) {{
+      if ($i ~ /^[A-Za-z_][A-Za-z0-9_]*=/) break
+      if ($i == codebuddy_bin || $i == "/opt/homebrew/bin/codebuddy" || $i == "/usr/local/bin/codebuddy") {{
+        is_codebuddy = 1
+        break
+      }}
+    }}
+    if (!is_codebuddy) next
+    cmd = "codebuddy"
+  }}
   # One server per session; the socket path basename is the session name.
   # No apostrophes in this block: the awk program is one single-quoted word.
   if (cmd == "zellij" && $3 == "--server" && $4 != "") {{
@@ -71,7 +84,7 @@ printf 'SCANEND\n'"#
 
 pub(crate) fn dispatch() {
     let mut ctx = BTreeMap::new();
-    ctx.insert(crate::install::CTX_KEY.to_string(), CTX_SCAN.to_string());
+    ctx.insert(crate::CTX_KEY.to_string(), CTX_SCAN.to_string());
     host::run_command(&["sh", "-c", &scan_script(&TOOLS)], ctx);
 }
 
@@ -96,7 +109,7 @@ pub(crate) fn announce_panel(sanitized: &str, real: &str) {
         return;
     }
     let mut ctx = BTreeMap::new();
-    ctx.insert(crate::install::CTX_KEY.to_string(), "panel-beacon".to_string());
+    ctx.insert(crate::CTX_KEY.to_string(), "panel-beacon".to_string());
     host::run_command(&["sh", "-c", beacon_script(), "sh", sanitized, real], ctx);
 }
 
@@ -427,6 +440,7 @@ mod tests {
             "45985 claude ZELLIJ=0 ZELLIJ_PANE_ID=2 ZELLIJ_SESSION_NAME=mob\n",
             "47845 claude ZELLIJ=0 ZELLIJ_PANE_ID=3 ZELLIJ_SESSION_NAME=mob\n",
             "43820 codex ZELLIJ=0 ZELLIJ_PANE_ID=6 ZELLIJ_SESSION_NAME=mob\n",
+            "43821 node /opt/homebrew/bin/codebuddy ZELLIJ=0 ZELLIJ_PANE_ID=7 ZELLIJ_SESSION_NAME=mob\n",
             "67819 claude ZELLIJ=0 ZELLIJ_PANE_ID=11 ZELLIJ_SESSION_NAME=other\n",
             "1234 nvim ZELLIJ=0 ZELLIJ_PANE_ID=9 ZELLIJ_SESSION_NAME=mob\n",
             "5678 claude SOME=thing\n",
@@ -463,7 +477,7 @@ mod tests {
         fn finds_agents_across_every_session() {
             assert_eq!(
                 run("all", PROCS),
-                "SCAN mob 2 claude\nSCAN mob 3 claude\nSCAN mob 6 codex\nSCAN other 11 claude\nSCANEND\n"
+                "SCAN mob 2 claude\nSCAN mob 3 claude\nSCAN mob 6 codex\nSCAN mob 7 codebuddy\nSCAN other 11 claude\nSCANEND\n"
             );
         }
 
@@ -489,6 +503,16 @@ mod tests {
                 "SCAN mob 4 claude\nSCANEND\n",
                 "absolute paths must match on basename"
             );
+        }
+
+        #[test]
+        fn finds_codebuddy_without_misclassifying_node() {
+            let procs = concat!(
+                "1 node /opt/homebrew/bin/codebuddy ZELLIJ_PANE_ID=4 ZELLIJ_SESSION_NAME=mob\n",
+                "2 node /tmp/server.js ZELLIJ_PANE_ID=5 ZELLIJ_SESSION_NAME=mob\n",
+                "3 node /tmp/codebuddy-helper ZELLIJ_PANE_ID=6 ZELLIJ_SESSION_NAME=mob\n",
+            );
+            assert_eq!(run("codebuddy", procs), "SCAN mob 4 codebuddy\nSCANEND\n");
         }
 
         /// A process with no Zellij environment at all must not be attributed to

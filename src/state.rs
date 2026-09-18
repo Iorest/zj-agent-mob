@@ -5,7 +5,6 @@ use zellij_tile::prelude::*;
 
 use crate::agent::{Agent, AgentId, Block};
 use crate::host;
-use crate::install::Install;
 use crate::status::Status;
 use crate::{SIGINT_BYTE, SPINNER, STALE_AFTER, TICK};
 
@@ -65,9 +64,6 @@ pub struct State {
     pub(crate) timer_running: bool,
     pub(crate) popup_on_waiting: bool,
     pub(crate) hidden: bool,
-    pub(crate) install: Install,
-    pub(crate) update: crate::install::Update,
-    pub(crate) check_updates: bool,
     /// The panel's own session; rows from anywhere else are foreign.
     pub(crate) session_name: String,
     /// Every session Zellij lists, which is only ever the panel's own:
@@ -154,13 +150,6 @@ pub(crate) struct Find {
 }
 
 impl State {
-    /// The setup prompt replaces the empty screen when nothing can report in.
-    /// Once an agent has checked in the hooks demonstrably work, so the prompt
-    /// is suppressed regardless of what the last status read said.
-    pub(crate) fn showing_setup(&self) -> bool {
-        !self.install.open && self.agents.is_empty() && self.install.needs_setup()
-    }
-
     pub(crate) fn icon_for(&self, agent: &Agent) -> &'static str {
         match agent.status {
             Status::Working | Status::Compact => SPINNER[self.frame % SPINNER.len()],
@@ -230,10 +219,7 @@ impl State {
             return;
         }
         let mut ctx = BTreeMap::new();
-        ctx.insert(
-            crate::install::CTX_KEY.to_string(),
-            crate::notify::CTX_DETECT.to_string(),
-        );
+        ctx.insert(crate::CTX_KEY.to_string(), crate::notify::CTX_DETECT.to_string());
         host::run_command(&["sh", "-c", crate::notify::detect_script()], ctx);
     }
 
@@ -878,7 +864,7 @@ impl State {
             .agents
             .get(self.selected)
             .map(|a| a.tool.clone())
-            .filter(|t| t == "claude" || t == "codex")
+            .filter(|t| t == "claude" || t == "codex" || t == "codebuddy")
             .unwrap_or_else(|| "claude".to_string());
         host::open_command_pane_floating(
             CommandToRun {
@@ -892,6 +878,28 @@ impl State {
         // The pane opens as a command pane, so a missing binary surfaces in that
         // pane with its own exit status rather than vanishing. Hiding the panel
         // is what makes it visible.
+        self.hidden = true;
+        host::hide_self();
+        true
+    }
+
+    /// Opens a floating login shell in the selected row's directory, or the
+    /// panel's own directory when there is no row to borrow one from.
+    pub(crate) fn spawn_shell_terminal(&mut self) -> bool {
+        let cwd = self
+            .agents
+            .get(self.selected)
+            .map(|a| a.cwd.clone())
+            .filter(|c| !c.is_empty());
+        host::open_command_pane_floating(
+            CommandToRun {
+                path: "sh".into(),
+                args: vec!["-l".into()],
+                cwd: cwd.map(Into::into),
+            },
+            None,
+            BTreeMap::new(),
+        );
         self.hidden = true;
         host::hide_self();
         true
@@ -3179,10 +3187,7 @@ mod cross_session_tests {
         assert_eq!(s.agents.len(), 1);
 
         let mut ctx = BTreeMap::new();
-        ctx.insert(
-            crate::install::CTX_KEY.to_string(),
-            crate::discover::CTX_SCAN.to_string(),
-        );
+        ctx.insert(crate::CTX_KEY.to_string(), crate::discover::CTX_SCAN.to_string());
         s.update(Event::RunCommandResult(
             Some(1),
             Vec::new(),

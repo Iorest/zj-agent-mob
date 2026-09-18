@@ -69,13 +69,13 @@ stopped - they stopped it. It erodes trust in every other row.
 
 Fix is one case branch: `Interrupt) status=idlewait` (the agent is alive and
 wants input - the user cut it off mid-answer) plus a `detail=interrupted` so the
-row says why. Register the event in both installers. No new plumbing; the pipe
+row says why. Register the event in both hook adapters. No new plumbing; the pipe
 and spool paths already carry it.
 
 > Yes
 
 **Built** as planned, plus `block=idle` so the row says *why* it wants input
-rather than only that it does. Registered in both installers. Verified live: an
+rather than only that it does. Registered in both hook adapters. Verified live: an
 `Interrupt` event now reports `status=idlewait detail=interrupted block=idle`.
 
 ### H2. In-flight tool timing via `tool_use_id` (S/M)

@@ -20,7 +20,7 @@ order:
 
 ```sh
 ./scripts/check.sh          # everything, ~40s
-./scripts/check.sh fast     # skips the wasm build, exports and installer e2e
+./scripts/check.sh fast     # skips the wasm build, exports and panel e2e
 ./scripts/check.sh -l       # list the steps without running them
 ```
 
@@ -34,8 +34,8 @@ cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 cargo build --release --target wasm32-wasip1
-shellcheck --shell=sh init.sh scripts/zj-agent-mob-hook.sh scripts/check.sh tests/e2e-install.sh
-./tests/e2e-install.sh
+shellcheck --shell=sh scripts/zj-agent-mob-hook.sh scripts/check.sh tests/e2e-zellij.sh
+python3 -m py_compile scripts/zj-agent-mob-hook.py
 ```
 
 ### Test layers
@@ -44,22 +44,17 @@ shellcheck --shell=sh init.sh scripts/zj-agent-mob-hook.sh scripts/check.sh test
 |---|---|---|
 | Unit | `src/*.rs`, beside the code | The state machine and layout, starting from an already-parsed pipe message |
 | End-to-end (hook) | [`tests/hook_e2e.rs`](../tests/hook_e2e.rs) | The hook script: hook-event JSON in, `zellij pipe --args` out |
-| End-to-end (installer) | [`tests/e2e-install.sh`](../tests/e2e-install.sh) | `init.sh`: the hook config written for Claude Code and Codex, and the round trip back out |
+| End-to-end (panel) | [`tests/e2e-zellij.sh`](../tests/e2e-zellij.sh) | A real WASM plugin loaded in Zellij and fed by a configured hook |
 
-Between them these cover the two seams the Rust suite cannot reach, and neither needs a running Zellij, a real agent, or a pane. Both run in about a second.
+Between them these cover the hook-to-plugin seam and the real panel boundary. The hook tests run without a Zellij server; the panel test uses a real Zellij session.
 
-`tests/hook_e2e.rs` stubs `zellij` with a script that records its argv, then feeds the hook real-shaped event JSON: event-to-status mapping, the cases that must stay silent (no `$ZELLIJ_PANE_ID`, `ZJ_AGENT_HEARTBEAT=0`, unknown or malformed events), Claude `ai-title` and Codex rollout summaries, sanitizing, shell-injection through the task and `cwd`, and the always-exit-0 contract, plus the fan-out of urgent transitions to panels in other sessions.
+`tests/hook_e2e.rs` drives the Python hook with a stub `zellij` binary, then feeds it real-shaped event JSON: event-to-status mapping, malformed input, Claude transcript and Codex rollout summaries, CodeBuddy labels, sanitizing, permission verdicts, follow-ups, context injection, shell-injection resistance, fail-open behavior, and urgent fan-out. The shell hook remains a supported equivalent entry point and is checked with ShellCheck.
 
-`tests/e2e-install.sh` runs the real `init.sh` against a throwaway set of paths (`ZJ_AGENT_HOOK_DIR`, `ZJ_AGENT_PLUGIN_DIR`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`), so it never touches your own `~/.claude` or `~/.codex`. It asserts the release-critical part: the hook config the agents themselves read.
-
-- **Hook contract**, per agent. Every event Claude Code and Codex need is registered against the hook; every event registered is one the hook actually maps to a status (so no agent pays for a hook that reports nothing); Claude entries are `async` and Codex entries are not; `Notification` stays scoped to `permission_prompt|idle_prompt`; Codex commands carry the `env ZJ_AGENT_TOOL=codex` prefix that selects the right transcript reader.
-- **Non-destructive merge.** An existing `settings.json` keeps its unrelated keys, its own hooks on events we share, and its events we never touch. Uninstall is checked by comparing the file back to the pre-install content, not just by grepping for our command.
-- **Round trip.** Idempotent re-install, per-target install and uninstall, `status` in the exact `key=installed|absent` shape the plugin's install screen parses, backups, symlinked (stow/dotfiles) settings written through rather than replaced, dry runs that write nothing, and the self-copy at `~/.config/zj-agent-mob/install.sh` working with no source tree beside it.
-- **The loop closed.** After a real install it runs the installed `hook.sh` through the exact command string recorded in each agent's config and asserts the resulting pipe args report `tool=claude` / `tool=codex`.
+The hook configuration itself is deliberately outside this repository's runtime. Each agent is configured manually, with `ZJ_AGENT_TOOL` selecting its integration adapter; the hook never edits user settings.
 
 ```sh
 cargo test --test hook_e2e
-./tests/e2e-install.sh
+./tests/e2e-zellij.sh
 ```
 
 Ten of `discover.rs`'s tests execute the real scan script through `sh` against a stubbed `ps` and a real staged spool directory, rather than asserting on the script's text. The awk program is the part that can silently return nothing - which is indistinguishable from "no agents running" - so it is worth running rather than pattern-matching.
@@ -72,7 +67,8 @@ Zellij host calls (`focus_terminal_pane`, `hide_self`, `run_command`, ...) are W
 
 ```sh
 cargo build --release --target wasm32-wasip1
-./init.sh install plugin
+mkdir -p "$HOME/.config/zellij/plugins"
+cp target/wasm32-wasip1/release/zj-agent-mob.wasm "$HOME/.config/zellij/plugins/zj-agent-mob.wasm"
 
 # Zellij caches compiled plugins, so force a reload or the old build stays live.
 zellij action launch-or-focus-plugin --skip-plugin-cache --floating \
@@ -80,17 +76,8 @@ zellij action launch-or-focus-plugin --skip-plugin-cache --floating \
 ```
 
 That reloads the plugin but not the hook, which is the right loop for plugin-only
-changes. When you have touched `scripts/zj-agent-mob-hook.sh`, or you are syncing
-a checkout onto another machine, do the full cycle instead:
-
-```sh
-./scripts/reinstall-local.sh          # build, install, clear plugin + spool caches
-./scripts/reinstall-local.sh --check  # installed == checkout? exits 1 if not
-```
-
-A hook change also needs the *agent* restarted, since hooks are read at session
-start. `--check` is worth running first when a machine is behaving oddly: it
-catches the case where the installed wasm is some older build you no longer have.
+changes. A hook change requires copying the selected hook to its configured path
+and restarting the agent, since hook settings are read at session start.
 
 Feed the panel a status without running a real agent:
 
@@ -98,14 +85,6 @@ Feed the panel a status without running a real agent:
 zellij pipe --name agent-status \
   --plugin "file:$HOME/.config/zellij/plugins/zj-agent-mob.wasm" \
   --args "pane_id=$ZELLIJ_PANE_ID,tool=claude,status=waiting,task=manual test"
-```
-
-Test the installer without touching your real config by pointing it at throwaway directories:
-
-```sh
-export ZJ_AGENT_HOOK_DIR=/tmp/zj/hooks ZJ_AGENT_PLUGIN_DIR=/tmp/zj/plugins
-export CLAUDE_CONFIG_DIR=/tmp/zj/claude CODEX_HOME=/tmp/zj/codex
-./init.sh install && ./init.sh status && ./init.sh uninstall
 ```
 
 ## Cutting a release

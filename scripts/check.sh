@@ -7,7 +7,7 @@
 # single source of truth.
 #
 #   ./scripts/check.sh          everything
-#   ./scripts/check.sh fast     skip the wasm build, exports and installer e2e
+#   ./scripts/check.sh fast     skip the wasm build, exports and panel e2e
 #   ./scripts/check.sh test     one step by name (what CI calls)
 #   ./scripts/check.sh -l       list the steps
 set -eu
@@ -16,12 +16,12 @@ cd "$(dirname "$0")/.."
 
 WASM=target/wasm32-wasip1/release/zj-agent-mob.wasm
 EXPORTS="_start load update render pipe plugin_version"
-SHELL_SCRIPTS="init.sh scripts/zj-agent-mob-hook.sh scripts/check.sh scripts/reinstall-local.sh tests/e2e-install.sh tests/e2e-zellij.sh"
+SHELL_SCRIPTS="scripts/zj-agent-mob-hook.sh scripts/check.sh tests/e2e-zellij.sh"
 
 # `fast` steps are the ones quick enough for a tight local loop; `all` steps
 # also run on a bare `./scripts/check.sh`.
-STEPS="fmt clippy test shellcheck wasm exports installer panel"
-FAST_STEPS="fmt clippy test shellcheck"
+STEPS="fmt clippy test shellcheck python wasm exports panel"
+FAST_STEPS="fmt clippy test shellcheck python"
 
 run_step() {
   case "$1" in
@@ -30,12 +30,9 @@ run_step() {
     # Tests run natively: host calls are stubbed off-wasm precisely so this works.
     test) cargo test --all-targets ;;
     shellcheck) run_shellcheck ;;
+    python) python3 -m py_compile scripts/zj-agent-mob-hook.py && rm -rf scripts/__pycache__ ;;
     wasm) cargo build --release --target wasm32-wasip1 ;;
     exports) check_exports ;;
-    # The installer is the only supported path to a working install, and what it
-    # writes is read by Claude Code and Codex themselves: a wrong event name or
-    # matcher silences every agent and no Rust test would notice.
-    installer) ./tests/e2e-install.sh ;;
     # The only step that loads the compiled wasm into a real zellij. Everything
     # else stops at a stub, so a render that overflows its pane, or a plugin
     # that will not load at all, is invisible without this. Skips itself when
@@ -85,9 +82,9 @@ steps, in CI order:
   clippy      cargo clippy --all-targets -- -D warnings
   test        cargo test --all-targets              (unit + hook e2e)
   shellcheck  shellcheck the shipped scripts
+  python      python3 -m py_compile the hook script
   wasm        cargo build --release --target wasm32-wasip1   [skipped by \`fast\`]
   exports     the six symbols Zellij loads                   [skipped by \`fast\`]
-  installer   ./tests/e2e-install.sh                         [skipped by \`fast\`]
   panel       ./tests/e2e-zellij.sh (real zellij)             [skipped by \`fast\`]
 EOF
 }

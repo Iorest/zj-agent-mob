@@ -174,15 +174,14 @@ fn a_new_turn_resets_the_counters() {
 const DESTRUCTIVE: [char; 6] = ['x', 'a', 'r', 'y', 'm', 'n'];
 
 /// Every printable key, in every mode, must leave the fleet intact unless the
-/// mode owns that key. `x` from the install screen is unit-tested; this is the
-/// rest of the matrix, which is where a vim user's muscle memory lands.
+/// mode owns that key. This is where a vim user's muscle memory lands.
 #[test]
 fn no_key_reaches_a_destructive_action_from_a_foreign_mode() {
     let keys: Vec<char> = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
         .chars()
         .collect();
 
-    for mode in ["install", "setup", "reply", "jump"] {
+    for mode in ["reply", "jump"] {
         for &c in &keys {
             let mut sim = Sim::new("mob", &["mob"]);
             sim.status(&args(&[
@@ -265,7 +264,7 @@ fn the_second_x_kills_the_agent_that_was_armed() {
 /// the cursor landed on.
 #[test]
 fn navigation_disarms_a_pending_kill() {
-    for nav in ['j', 'k', 's', 'i', 'q'] {
+    for nav in ['j', 'k', 's', 'q'] {
         let mut sim = Sim::new("mob", &["mob"]);
         for pane in ["1", "2"] {
             sim.status(&args(&[
