@@ -2,7 +2,7 @@
 name = "zj-agent-mob"
 version = "0.13.0"
 edition = "2021"
-description = "Zellij plugin for monitoring Claude Code and Codex agents in the current session"
+description = "Zellij plugin for monitoring coding agents across panes, tabs, and sessions"
 license = "Apache-2.0"
 
 # Zellij loads plugins as WASI *binaries*: the host looks for the `_start`
@@ -19,7 +19,7 @@ name = "zj_agent_mob"
 path = "src/lib.rs"
 
 [dependencies]
-zellij-tile = "0.44.3"
+zellij-tile = "0.45.1"
 
 # Test-only: builds the JSON payloads fed to the hook. Never reaches the wasm
 # binary, since tests/ only builds for the host target.

@@ -5,8 +5,8 @@
 #
 # No terminal recorder, no ttyd, no headless browser. The tour is driven with
 # `zellij action` and the panel's own rendered output is read back with
-# `dump-screen --ansi`; each read is one frame. render-frames.py turns those
-# frames into the GIF.
+# `dump-screen --path`; each read is one plain-text frame. render-frames.py
+# applies colours again when turning those frames into the GIF.
 #
 # Why this rather than recording a terminal: the panel is the entire subject, so
 # recording a whole terminal window means fighting everything that is not the
@@ -91,8 +91,8 @@ spool() {
 #
 # A plugin pane is only dumpable while it holds focus, and pane churn moves
 # focus, so this re-focuses every time.
-# Panel geometry, re-asserted before every frame: switching to the install
-# screen and back snaps the pane to a default small enough to clip the list.
+# Panel geometry, re-asserted before every frame: pane changes can snap the
+# floating pane to a default size small enough to clip the list.
 fill() {
   [ -n "$PANEL" ] || return 0
   za change-floating-pane-coordinates --pane-id "$PANEL" \

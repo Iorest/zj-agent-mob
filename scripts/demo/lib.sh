@@ -3,7 +3,7 @@
 #
 # Why not keystrokes: Zellij's input is modal, so a tape that types `Ctrl+S` then
 # `c` depends on which mode the session happens to be in. `zellij action` is
-# unconditional and returns an exit code. See docs/demo.md.
+# unconditional and returns an exit code. See docs/development.md for the demo loop.
 #
 # Requires: ZJ_SESSION set by the caller.
 

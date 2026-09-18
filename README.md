@@ -35,8 +35,9 @@ supported, compatible entry point.
 | Requirement | Why |
 |---|---|
 | Zellij 0.44+ | Plugin API (`LaunchOrFocusPlugin`, pipes, `RunCommandResult`) |
-| Python 3.9+ or POSIX shell | Python or shell hook runtime |
-| `zellij` on `PATH` | The hook uses `zellij pipe` |
+| Python 3.12+ | Recommended Python hook runtime |
+| POSIX shell + `jq` | Optional shell hook runtime |
+| `zellij` on `PATH` | The hook uses `zellij pipe` when the agent runs in Zellij |
 | Rust + `wasm32-wasip1` target | Only to build from source; releases contain the wasm |
 
 ## Quick start
@@ -58,8 +59,10 @@ chmod +x ~/.config/zj-agent-mob/zj-agent-mob-hook.py
 ```
 
 From a source checkout, use either script under `scripts/` as the hook source.
-The Python hook is recommended for new integrations; both hooks expose the same
-status, spool, notification, permission, follow-up, and peer-context behavior.
+The Python hook is recommended for new integrations and supports the broader JSON
+field set. The shell hook is a lighter POSIX implementation that shares the core
+status, pipe, spool, permission, follow-up, and peer-context protocol; it also
+requires `jq` on `PATH`.
 
 To build the plugin yourself:
 
@@ -120,24 +123,27 @@ when an agent session starts.
 | <kbd>Enter</kbd> | Jump to the selected agent and hide the panel |
 | <kbd>1</kbd>–<kbd>9</kbd> | Jump to agent N |
 | <kbd>/</kbd> | Fuzzy find |
+| <kbd>g</kbd> / <kbd>G</kbd> | Start a counted jump; `gg` goes to the first row and `G` to the last |
 | <kbd>s</kbd> | Cycle urgency, project, and session ordering |
 | <kbd>x</kbd> | Send SIGINT; press again to close the pane |
-| <kbd>a</kbd> / <kbd>r</kbd> | Approve / reject a parked permission prompt |
+| <kbd>a</kbd> / <kbd>r</kbd> | Approve / reject a parked tool or plan permission prompt |
 | <kbd>A</kbd> | Approve and add an allow rule |
 | <kbd>f</kbd> | Queue a follow-up for the end of the turn |
-| <kbd>y</kbd> / <kbd>m</kbd> | Answer a waiting agent |
+| <kbd>y</kbd> / <kbd>m</kbd> | Answer a generic `question` notification waiting on pane input |
 | <kbd>o</kbd> | Expand or collapse subagents |
 | <kbd>d</kbd> / <kbd>D</kbd> | Dismiss one or all `done` badges |
 | <kbd>n</kbd> | Open a new agent in a floating pane |
+| <kbd>t</kbd> | Open a floating login shell |
 | <kbd>q</kbd> / <kbd>Esc</kbd> | Hide the panel |
 
 ## Statuses
 
-`failed`, `waiting`, `idle-wait`, `done`, `compact`, `working`, `idle`,
-`found`, `unknown`, and `gone` describe the state visible to the panel.
-`found` means process discovery found an agent before its first hook event;
-`unknown` means a running agent has not refreshed status recently; `gone` means
-its Zellij session has exited. See [troubleshooting](docs/troubleshooting.md)
+The hook wire values include `failed`, `waiting`, `idlewait`, `done`, `compact`,
+`working`, `idle`, and `ended`. The panel renders `idlewait` as `idle-wait`.
+`found` is the panel label for a process-discovered agent before its first hook
+event. `unknown` means a row has not received fresh status recently; when its
+Zellij session has exited, the panel renders that row as `gone`. `gone` is a
+presentation label, not a hook status. See [troubleshooting](docs/troubleshooting.md)
 for recovery steps.
 
 ## Configuration
@@ -161,9 +167,11 @@ LaunchOrFocusPlugin "file:~/.config/zellij/plugins/zj-agent-mob.wasm" {
 
 - Hooks only report agents running inside Zellij. Without `ZELLIJ_PANE_ID`, the
   hook exits without writing status.
-- Cross-session status uses `$TMPDIR/zj-agent-mob-<uid>/status`; urgent states
-  (`waiting`, `idle-wait`, `failed`, and `done`) are fanned out immediately;
-  quieter states are refreshed by a five-second poll.
+- Cross-session status uses `$TMPDIR/zj-agent-mob-<uid>/status` when spool is
+  enabled. Urgent wire states (`waiting`, `idlewait`, `failed`, and `done`) are
+  fanned out immediately; visible live foreign rows are refreshed by a
+  five-second poll. Foreign rows reliably identify session and pane; tab
+  information is only available for panes in the panel's current session.
 - The spool contains task summaries and is created with mode `0700`. Set
   `ZJ_AGENT_SPOOL=0` to opt out of cross-session records.
 - Claude has no permission-granted event. With `ZJ_AGENT_HEARTBEAT=0`, a

@@ -429,6 +429,7 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::Block;
     use std::collections::BTreeMap;
 
     fn key(c: char) -> KeyWithModifier {
@@ -458,10 +459,13 @@ mod tests {
             ..Default::default()
         };
         for (pane, cwd, status) in specs {
-            let args: BTreeMap<String, String> = [("pane_id", *pane), ("cwd", *cwd), ("status", *status)]
+            let mut args: BTreeMap<String, String> = [("pane_id", *pane), ("cwd", *cwd), ("status", *status)]
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect();
+            if *status == "waiting" {
+                args.insert("block".into(), "question".into());
+            }
             s.handle_status(&args);
         }
         s
@@ -517,11 +521,18 @@ mod tests {
             ..Default::default()
         };
         for (pane, session, status) in rows {
-            s.handle_status(&args_map(&[
-                ("pane_id", &pane.to_string()),
-                ("session", session),
-                ("status", status),
-            ]));
+            let mut args: BTreeMap<String, String> = [
+                ("pane_id", pane.to_string()),
+                ("session", (*session).to_string()),
+                ("status", (*status).to_string()),
+            ]
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect();
+            if *status == "waiting" {
+                args.insert("block".into(), "question".into());
+            }
+            s.handle_status(&args);
         }
         s
     }
@@ -559,7 +570,7 @@ mod tests {
     fn reply_is_refused_unless_the_agent_is_blocked() {
         for (status, allowed) in [
             ("waiting", true),
-            ("idlewait", true),
+            ("idlewait", false),
             ("working", false),
             ("done", false),
             ("idle", false),
@@ -576,6 +587,18 @@ mod tests {
             s.handle_key(key('m'));
             assert_eq!(s.reply.is_some(), allowed, "m opened an editor on {status}");
         }
+    }
+
+    #[test]
+    fn reply_keys_do_not_write_into_permission_prompts() {
+        let mut s = state_with(&[(1, "mob", "waiting")]);
+        s.agents[0].block = Some(Block::Tool);
+        s.selected = 0;
+        assert!(!s.can_reply_selected());
+        assert!(!s.handle_key(key('y')));
+        assert!(!s.handle_key(key('m')));
+        assert!(s.reply.is_none());
+        assert_eq!(s.agents[0].status, Status::Waiting);
     }
 
     /// A dead session has no pane left to type into.

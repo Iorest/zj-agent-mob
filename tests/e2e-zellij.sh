@@ -179,13 +179,13 @@ case "$screen" in
   *"waiting"*) ok "a blocked agent shows as waiting" ;;
   *) bad "a blocked agent shows as waiting" "no 'waiting': $screen" ;;
 esac
-# `y yes  m message` is offered only while the selected row is blocked, so the
-# footer proves the block reached the panel even when the pane is too narrow for
-# the detail line that spells it out.
+# A permission block must not be treated as a generic question. In this narrow
+# floating pane the detail line is intentionally hidden, so the absence of the
+# `y yes`/`m message` hints is the observable safety gate.
 case "$screen" in
-  *"wants: permission"*|*"y yes"*|*"m message"*)
-    ok "the block reason reaches the panel" ;;
-  *) bad "the block reason reaches the panel" "not offered the reply keys: $screen" ;;
+  *"y yes"*|*"m message"*)
+    bad "permission prompts keep generic reply keys gated" "reply hints leaked: $screen" ;;
+  *) ok "permission prompts keep generic reply keys gated" ;;
 esac
 
 echo

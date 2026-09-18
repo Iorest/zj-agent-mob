@@ -19,8 +19,8 @@ The full check set is one command, running the same steps CI does in the same
 order:
 
 ```sh
-./scripts/check.sh          # everything, ~40s
-./scripts/check.sh fast     # skips the wasm build, exports and panel e2e
+./scripts/check.sh          # all checks, including the WASM build and panel e2e
+./scripts/check.sh fast     # skips the WASM build, exports and panel e2e
 ./scripts/check.sh -l       # list the steps without running them
 ```
 
@@ -48,7 +48,7 @@ python3 -m py_compile scripts/zj-agent-mob-hook.py
 
 Between them these cover the hook-to-plugin seam and the real panel boundary. The hook tests run without a Zellij server; the panel test uses a real Zellij session.
 
-`tests/hook_e2e.rs` drives the Python hook with a stub `zellij` binary, then feeds it real-shaped event JSON: event-to-status mapping, malformed input, Claude transcript and Codex rollout summaries, CodeBuddy labels, sanitizing, permission verdicts, follow-ups, context injection, shell-injection resistance, fail-open behavior, and urgent fan-out. The shell hook remains a supported equivalent entry point and is checked with ShellCheck.
+`tests/hook_e2e.rs` drives the Python hook with a stub `zellij` binary, then feeds it real-shaped event JSON: event-to-status mapping, malformed input, Claude transcript and Codex rollout summaries, CodeBuddy labels, sanitizing, permission verdicts, follow-ups, context injection, shell-injection resistance, fail-open behavior, and urgent fan-out. The shell hook remains a supported lighter entry point and is checked with ShellCheck.
 
 The hook configuration itself is deliberately outside this repository's runtime. Each agent is configured manually, with `ZJ_AGENT_TOOL` selecting its integration adapter; the hook never edits user settings.
 
@@ -57,9 +57,11 @@ cargo test --test hook_e2e
 ./tests/e2e-zellij.sh
 ```
 
-Ten of `discover.rs`'s tests execute the real scan script through `sh` against a stubbed `ps` and a real staged spool directory, rather than asserting on the script's text. The awk program is the part that can silently return nothing - which is indistinguishable from "no agents running" - so it is worth running rather than pattern-matching.
-
-Two tests run the whole loop rather than one layer: `the_real_hook_and_scan_produce_a_live_foreign_row` drives the real hook script, the real scan script, and the real merge in sequence, and `real_machine_capture_renders_live_cross_session_rows` replays bytes captured from two live Zellij sessions. Between them they cover the seams each single-layer test assumes.
+The `discover.rs` tests execute the real scan script through `sh` against a
+stubbed `ps` and staged spool directories, rather than asserting on the script's
+text. Other integration tests drive the hook, scan, and merge paths together,
+including live cross-session row rendering. These tests cover the seams that a
+unit test of the Rust state machine alone cannot reach.
 
 Zellij host calls (`focus_terminal_pane`, `hide_self`, `run_command`, ...) are WASM imports with no native symbol, so they're behind the `host` shim that no-ops off-wasm. That keeps the whole state machine and all layout code unit-testable with a plain `cargo test`.
 
@@ -89,17 +91,17 @@ zellij pipe --name agent-status \
 
 ## Cutting a release
 
-Releases are published by [`.github/workflows/release.yml`](../.github/workflows/release.yml) when a `v*` tag is pushed. The workflow builds the wasm, asserts it exports the six symbols Zellij needs, checks the tag matches `Cargo.toml`, then creates the GitHub release with generated notes and the wasm attached.
+Releases are published by [`.github/workflows/release.yml`](../.github/workflows/release.yml) when a `v*` tag is pushed. The workflow builds the WASM, asserts the six Zellij exports, checks the tag against `Cargo.toml`, and creates a release from the static `.github/release-notes.md` with the WASM, Python hook, and Shell hook attached.
 
 The tag and `Cargo.toml` version must agree or the workflow fails on purpose, so bump the version first:
 
 ```sh
 # 1. bump `version` in Cargo.toml, then refresh Cargo.lock
 cargo build --release --target wasm32-wasip1
-git commit -am "chore: release v0.2.0"
+git commit -am "chore: release v<version>"
 
 # 2. tag and push; the workflow does the rest
-git tag -a v0.2.0 -m "v0.2.0"
+git tag -a v<version> -m "v<version>"
 git push origin main --follow-tags
 ```
 

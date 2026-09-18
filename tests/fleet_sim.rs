@@ -189,6 +189,7 @@ fn no_key_reaches_a_destructive_action_from_a_foreign_mode() {
                 ("status", "waiting"),
                 ("session_id", "s"),
                 ("cwd", "/w/p"),
+                ("block", "question"),
             ]));
             sim.status(&args(&[
                 ("pane_id", "2"),
@@ -338,6 +339,7 @@ fn reply_mode_swallows_every_destructive_key() {
         ("status", "waiting"),
         ("session_id", "s"),
         ("cwd", "/w/p"),
+        ("block", "question"),
     ]));
     sim.press(key('m'));
     assert!(sim.reply_target().is_some(), "m opens the editor");
@@ -361,6 +363,7 @@ fn a_reply_follows_its_agent_through_a_resort() {
         ("status", "waiting"),
         ("session_id", "s"),
         ("cwd", "/w/p"),
+        ("block", "question"),
     ]));
     sim.status(&args(&[
         ("pane_id", "2"),
@@ -394,6 +397,7 @@ fn a_reply_is_dropped_when_its_agent_exits() {
         ("status", "waiting"),
         ("session_id", "s"),
         ("cwd", "/w/p"),
+        ("block", "question"),
     ]));
     sim.press(key('m'));
     assert!(sim.reply_target().is_some());
@@ -469,6 +473,7 @@ fn a_dead_session_disables_the_actions_that_need_a_process() {
         ("status", "waiting"),
         ("session_id", "s"),
         ("cwd", "/w/p"),
+        ("block", "question"),
     ]));
     sim.select(0);
     sim.sessions(&["mob"]);
@@ -892,6 +897,7 @@ fn an_expired_prompt_stops_being_offered() {
         ("status", "waiting"),
         ("session_id", "s"),
         ("cwd", "/w/p"),
+        ("block", "question"),
     ]));
     sim.ask(&args(&[
         ("pane_id", "1"),
@@ -916,6 +922,7 @@ fn a_prompt_without_a_timeout_still_expires() {
         ("status", "waiting"),
         ("session_id", "s"),
         ("cwd", "/w/p"),
+        ("block", "question"),
     ]));
     sim.ask(&args(&[("pane_id", "1"), ("verdict_file", "/tmp/v.1")]));
     assert!(sim.has_ask(0));
@@ -935,6 +942,7 @@ fn a_parked_prompt_keeps_the_clock_running() {
         ("status", "waiting"),
         ("session_id", "s"),
         ("cwd", "/w/p"),
+        ("block", "question"),
     ]));
     sim.ask(&args(&[
         ("pane_id", "1"),

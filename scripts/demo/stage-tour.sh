@@ -159,7 +159,7 @@ sleep 1.5
 key_bare "q" 2.5     # panel out of the way; the stack behind it is now in shot
 
 # Meanwhile, an agent hits something it cannot decide alone.
-emit "pane_id=$P4,session=$ZJ_SESSION,tool=codex,status=waiting,task=Review the release checklist,cwd=~/repo/infra,detail=needs approval: gh release create v0.2.0"
+emit "pane_id=$P4,session=$ZJ_SESSION,tool=codex,status=waiting,task=Review the release checklist,cwd=~/repo/infra,detail=needs approval: gh release create v0.13.0"
 # The panel un-hides itself; give it a beat to land before re-asserting geometry.
 sleep 2
 fill_frame

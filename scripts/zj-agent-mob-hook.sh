@@ -117,26 +117,41 @@ json=$(cat)
 #
 # tool_arg is the most identifying argument of a tool call: the file for an
 # edit, the command for a shell, the pattern for a search. Codex nests the same
-# shape under .tool_input, so one expression serves both agents.
+# shape under .tool_input, while CodeBuddy may use .toolCall, so both forms are
+# accepted below.
 eval "$(printf '%s' "$json" | jq -r '
-  @sh "event=\(.hook_event_name // "")
-       session_id=\(.session_id // "")
-       cwd=\(.cwd // "")
-       transcript=\(.transcript_path // "")
-       tool_name=\(.tool_name // "")
+  (.model | if type == "object" then (.display_name // .name // .id // "") else . // "" end) as $model
+  | @sh "event=\(.event // .event_name // .hook_event_name // "")
+       session_id=\(.conversationId // .conversation_id // .sessionId // .session_id // "")
+       cwd=\(.workspace.current_dir // .workspace.cwd // .cwd // .current_dir // "")
+       transcript=\(.transcript_path // .transcriptPath // "")
+       tool_name=\(.tool_name // .toolCall.name // .tool_call.name // "")
        tool_arg=\(.tool_input.file_path // .tool_input.command
                   // .tool_input.pattern // .tool_input.path
-                  // .tool_input.url // .tool_input.description // "")
+                  // .tool_input.url // .tool_input.description
+                  // .toolCall.args.file_path // .toolCall.args.command
+                  // .toolCall.args.pattern // .toolCall.args.path
+                  // .toolCall.args.url // .toolCall.args.description
+                  // .toolCall.arguments.file_path // .toolCall.arguments.command
+                  // .toolCall.arguments.pattern // .toolCall.arguments.path
+                  // .toolCall.arguments.url // .toolCall.arguments.description
+                  // .tool_call.args.file_path // .tool_call.args.command
+                  // .tool_call.args.pattern // .tool_call.args.path
+                  // .tool_call.args.url // .tool_call.args.description
+                  // .tool_call.arguments.file_path // .tool_call.arguments.command
+                  // .tool_call.arguments.pattern // .tool_call.arguments.path
+                  // .tool_call.arguments.url // .tool_call.arguments.description // "")
        last_msg=\(.last_assistant_message // "")
-       notif=\(.message // "")
-       notif_type=\(.notification_type // "")
-       perm_mode=\(.permission_mode // "")
+       prompt=\(.prompt // .task // "")
+       notif=\(.message // .detail // "")
+       notif_type=\(.notification_type // .notificationType // "")
+       perm_mode=\(.permission_mode // .perm_mode // "")
        agent_type=\(.agent_type // "")
        agent_id=\(.agent_id // "")
        err_type=\(.error_type // "")
        err_msg=\(.error_message // "")
-       model=\(.model // "")
-       tool_use_id=\(.tool_use_id // "")
+       model=\($model)
+       tool_use_id=\(.tool_use_id // .toolUseId // "")
        compact_trigger=\(.trigger // "")"' 2>/dev/null)"
 
 [ -n "$event" ] || exit 0
@@ -174,10 +189,12 @@ esac
 # so tool events (which fire constantly) deliberately send an empty task and the
 # plugin treats empty as "leave unchanged".
 task=''
-# Stop usually hands us the turn's closing message directly, and that is cheaper
-# than any transcript read. It is not always present, so an empty result falls
-# through to the transcript below rather than reporting no task at all.
-[ "$event" = Stop ] && task=$(printf '%s' "$last_msg" | head -1)
+# UserPromptSubmit carries the prompt directly; Stop usually hands us the turn's
+# closing message. Both are cheaper than a transcript read.
+case "$event" in
+  UserPromptSubmit) task=$(printf '%s' "$prompt" | head -1) ;;
+  Stop) task=$(printf '%s' "$last_msg" | head -1) ;;
+esac
 case "$event" in
   Stop|SessionStart|UserPromptSubmit)
     if [ -n "$task" ]; then
@@ -245,7 +262,8 @@ case "$event" in
   PreCompact)
     detail="compacting context (${compact_trigger:-auto})" ;;
   PermissionRequest)
-    detail="needs approval: ${tool_arg:-$tool_name}" ;;
+    detail="needs approval: ${tool_name:-$tool_arg}"
+    [ -n "$tool_arg" ] && detail="$detail $tool_arg" ;;
   PreToolUse|PostToolUse|PostToolUseFailure)
     detail=$tool_name
     [ -n "$tool_arg" ] && detail="$tool_name $tool_arg"
@@ -309,6 +327,13 @@ agent_type=$(sanitize "$agent_type")
 agent_id=$(sanitize "$agent_id")
 perm_mode=$(sanitize "$perm_mode")
 model=$(sanitize "$model")
+# Pipe and spool records are comma-separated key/value lists. Keep the raw cwd,
+# session id, and tool name above for git/transcript/permission work, but sanitize
+# their serialized copies so a comma in a directory or agent id cannot split the
+# record and make the plugin read the wrong fields.
+cwd_field=$(sanitize "$cwd")
+session_id_field=$(sanitize "$session_id")
+tool_field=$(sanitize "$TOOL")
 
 # Git identity: the repo, the worktree dir when cwd is a linked worktree, and
 # the branch. Derived at most once per cwd and cached, because this runs on the
@@ -359,7 +384,7 @@ if [ "${ZJ_AGENT_DEBUG:-0}" = "1" ]; then
     >> "$HOME/.cache/zj-agent-mob/hook.log"
 fi
 
-ARGS="pane_id=$ZELLIJ_PANE_ID,session=$SESSION,tool=$TOOL,status=$status,session_id=$session_id,cwd=$cwd,task=$task,detail=$detail,block=$block,perm_mode=$perm_mode,model=$model,agent_type=$agent_type,agent_id=$agent_id,repo=$repo,wt=$wt,branch=$branch,tool_secs=$tool_secs,subagent_delta=$subagent_delta,task_delta=$task_delta,task_done_delta=$task_done_delta"
+ARGS="pane_id=$ZELLIJ_PANE_ID,session=$SESSION,tool=$tool_field,status=$status,session_id=$session_id_field,cwd=$cwd_field,task=$task,detail=$detail,block=$block,perm_mode=$perm_mode,model=$model,agent_type=$agent_type,agent_id=$agent_id,repo=$repo,wt=$wt,branch=$branch,tool_secs=$tool_secs,subagent_delta=$subagent_delta,task_delta=$task_delta,task_done_delta=$task_done_delta"
 
 zellij pipe --name agent-status --plugin "$PLUGIN" --args "$ARGS" >/dev/null 2>&1 || true
 
@@ -414,10 +439,18 @@ if [ "${ZJ_AGENT_SPOOL:-1}" != "0" ] && [ -n "$SESSION" ] && [ "$status" != ende
         [ -n "$model" ] || model=$(printf '%s' "$prev" | tr ',' '\n' | sed -n 's/^model=//p' | head -1)
       fi
     fi
+    # Rebuild serialized copies after inheriting fields from the previous
+    # snapshot; otherwise a quiet notification would persist them as empty.
+    cwd_field=$(sanitize "$cwd")
+    session_id_field=$(sanitize "$session_id")
     if [ -z "$status" ]; then
       SKIP_SPOOL=1
     fi
-    SPOOL_ARGS="pane_id=$ZELLIJ_PANE_ID,session=$SESSION,tool=$TOOL,status=$status,session_id=$session_id,cwd=$cwd,task=$task,detail=$detail,block=$block,perm_mode=$perm_mode,model=$model,agent_type=$agent_type,repo=$repo,wt=$wt,branch=$branch"
+    # Notification and counter events inherit identity fields from the previous
+    # snapshot above; serialize the inherited values, not the empty input fields.
+    session_id_field=$(sanitize "$session_id")
+    cwd_field=$(sanitize "$cwd")
+    SPOOL_ARGS="pane_id=$ZELLIJ_PANE_ID,session=$SESSION,tool=$tool_field,status=$status,session_id=$session_id_field,cwd=$cwd_field,task=$task,detail=$detail,block=$block,perm_mode=$perm_mode,model=$model,agent_type=$agent_type,repo=$repo,wt=$wt,branch=$branch"
     # Rename is atomic within a filesystem, so a reader sees the old record or
     # the new one, never a half-written one. $$ keeps concurrent hooks apart.
     if [ "${SKIP_SPOOL:-0}" != "1" ] && printf 'ts=%s,%s\n' "$(date +%s)" "$SPOOL_ARGS" > "$sfile.$$.tmp" 2>/dev/null; then
@@ -486,9 +519,20 @@ if [ "$event" = PermissionRequest ] && [ "${ZJ_AGENT_APPROVE:-1}" = "1" ]; then
   # that can no longer be answered, and report success for a verdict that was
   # written into the void.
   approve_timeout=${ZJ_AGENT_APPROVE_TIMEOUT:-30}
-  zellij pipe --name agent-ask --plugin "$PLUGIN" \
-    --args "pane_id=$ZELLIJ_PANE_ID,session=$SESSION,verdict_file=$vfile,tool_name=$tool_name,tool_arg=$tool_arg,timeout=$approve_timeout" \
-    >/dev/null 2>&1 || true
+  ask_tool_name=$(sanitize "$tool_name")
+  ask_tool_arg=$(sanitize "$tool_arg")
+  ask_args="pane_id=$ZELLIJ_PANE_ID,session=$SESSION,verdict_file=$vfile,tool_name=$ask_tool_name,tool_arg=$ask_tool_arg,timeout=$approve_timeout"
+  zellij pipe --name agent-ask --plugin "$PLUGIN" --args "$ask_args" >/dev/null 2>&1 || true
+  if [ "${ZJ_AGENT_FANOUT:-1}" != "0" ] && [ -n "$SESSION" ]; then
+    for beacon in "$(spool_dir)"/panel.*; do
+      [ -f "$beacon" ] || continue
+      target=$(head -n 1 "$beacon" 2>/dev/null || true)
+      [ -n "$target" ] || target=${beacon##*/panel.}
+      [ "$target" = "$SESSION" ] && continue
+      zellij --session "$target" pipe --name agent-ask --plugin "$PLUGIN" \
+        --args "$ask_args" >/dev/null 2>&1 || true
+    done
+  fi
 
   # Poll rather than block on a FIFO: a FIFO open() with no reader hangs past
   # any timeout, and Codex has no working async hooks to absorb that.
@@ -516,7 +560,11 @@ if [ "$event" = PermissionRequest ] && [ "${ZJ_AGENT_APPROVE:-1}" = "1" ]; then
 fi
 
 if [ -n "$followup" ]; then
-  printf '%s' "$followup" | jq -Rs '{decision:"block", reason:.}' 2>/dev/null || true
+  if [ "$TOOL" = codebuddy ]; then
+    printf '%s' "$followup" | jq -Rs '{continue:false, reason:.}' 2>/dev/null || true
+  else
+    printf '%s' "$followup" | jq -Rs '{decision:"block", reason:.}' 2>/dev/null || true
+  fi
   exit 0
 fi
 

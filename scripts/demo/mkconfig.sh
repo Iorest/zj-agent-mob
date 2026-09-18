@@ -3,7 +3,7 @@
 #
 #   sh scripts/demo/mkconfig.sh <outdir>
 #
-# Why not just use ~/.config/zellij directly (which docs/demo.md settles on):
+# Why not just use ~/.config/zellij directly (the development notes cover the demo setup):
 # three things the demo needs cannot be set per-invocation.
 #
 #   - `default_layout` picks the bar-free layout. Passing `-l` instead does NOT
@@ -15,8 +15,8 @@
 #     attaches but before the first frame.
 #   - Same for the release-notes popup on a version bump.
 #
-# The real config is copied first, so the personal theme and keybinds - which
-# docs/demo.md deliberately records against - are preserved. Only the three keys
+# The real config is copied first, so the personal theme and keybinds are
+# preserved. Only the recording-specific keys
 # above are overridden, and only for the recording.
 set -e
 

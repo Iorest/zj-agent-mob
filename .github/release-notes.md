@@ -10,8 +10,10 @@ than a client-specific integration.
 - Added the recommended Python hook entry point at
   `scripts/zj-agent-mob-hook.py`; the compatible POSIX shell hook remains at
   `scripts/zj-agent-mob-hook.sh`.
-- Normalized common JSON event, session, workspace, tool, model, usage, and
-  context fields across coding-agent integrations for both hooks.
+- Normalized the core JSON event, session, workspace, and tool fields across
+  coding-agent integrations. The Python hook additionally supports broader
+  aliases and usage/context extensions; the shell hook remains a lighter
+  core-field implementation.
 - Added `claude`, `codex`, and `codebuddy` tool labels without making the panel
   depend on one agent vendor.
 - Preserved cross-session status, atomic per-user spool records, urgency fan-out,

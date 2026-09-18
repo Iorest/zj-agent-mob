@@ -165,6 +165,27 @@ pub mod testing {
             self.state.agents[i].status.label()
         }
 
+        pub fn session_id_of(&self, i: usize) -> &str {
+            &self.state.agents[i].session_id
+        }
+
+        pub fn task_of(&self, i: usize) -> Option<&str> {
+            self.state.agents[i].task.as_deref()
+        }
+
+        pub fn detail_of(&self, i: usize) -> Option<&str> {
+            self.state.agents[i].detail.as_deref()
+        }
+
+        pub fn block_of(&self, i: usize) -> Option<&'static str> {
+            self.state.agents[i].block.map(|block| match block {
+                crate::agent::Block::Tool => "tool",
+                crate::agent::Block::Plan => "plan",
+                crate::agent::Block::Question => "question",
+                crate::agent::Block::Idle => "idle",
+            })
+        }
+
         pub fn counters(&self) -> Vec<((String, u32), u32, u32, u32)> {
             self.state
                 .agents

@@ -8,7 +8,35 @@ use crate::host;
 use crate::status::Status;
 use crate::{SIGINT_BYTE, SPINNER, STALE_AFTER, TICK};
 
-/// A permission prompt parked by a blocked hook, waiting on a verdict.
+/// The fixed POSIX launcher used to select a login shell in a command pane.
+pub(crate) const SHELL_SELECTOR: &str = r#"
+selected=${1:-}
+case "$selected" in
+  zsh|bash|sh)
+    command -v "$selected" >/dev/null 2>&1 && exec "$selected" -l ;;
+  /*)
+    [ -x "$selected" ] && exec "$selected" -l ;;
+esac
+for candidate in zsh bash sh; do
+  command -v "$candidate" >/dev/null 2>&1 && exec "$candidate" -l
+done
+printf '%s\n' 'zj-agent-mob: no login shell found' >&2
+exit 127
+"#;
+
+pub(crate) fn shell_command(shell: &str, cwd: Option<String>) -> CommandToRun {
+    CommandToRun {
+        path: "sh".into(),
+        args: vec![
+            "-c".into(),
+            SHELL_SELECTOR.into(),
+            "zj-agent-mob-shell".into(),
+            shell.trim().into(),
+        ],
+        cwd: cwd.map(Into::into),
+    }
+}
+
 pub(crate) struct Ask {
     pub(crate) id: AgentId,
     pub(crate) verdict_file: String,
@@ -461,6 +489,9 @@ impl State {
             if detail.is_some() {
                 agent.detail = detail;
             }
+            if let Some(session_id) = args.get("session_id").filter(|id| !id.is_empty()) {
+                agent.session_id = session_id.clone();
+            }
             if let Some(cwd) = args.get("cwd").filter(|c| !c.is_empty()) {
                 agent.cwd = cwd.clone();
             }
@@ -776,13 +807,18 @@ impl State {
         changed
     }
 
-    /// Whether the selected agent can be typed into. Only a blocked agent: any
-    /// other state has no prompt waiting, so the keystrokes would land mid-turn
-    /// as stray input. A foreign row is reachable through the CLI.
+    /// Whether the selected agent is waiting for a generic question answer.
+    /// Permission and plan prompts have a verdict file and must be answered by
+    /// the approval keys; typing into their pane would not settle the request.
     pub(crate) fn can_reply_selected(&self) -> bool {
         self.agents
             .get(self.selected)
-            .map(|a| matches!(a.status, Status::Waiting | Status::IdleWait) && a.session_alive)
+            .map(|a| {
+                a.status == Status::Waiting
+                    && a.block == Some(Block::Question)
+                    && a.session_alive
+                    && self.ask_for(&a.id).is_none()
+            })
             .unwrap_or(false)
     }
 
@@ -821,10 +857,13 @@ impl State {
         };
         // The bound agent must still be answerable; it may have moved on or
         // exited while the reply was being typed.
-        let sendable = self
-            .agents
-            .iter()
-            .any(|a| a.id == id && matches!(a.status, Status::Waiting | Status::IdleWait) && a.session_alive);
+        let sendable = self.agents.iter().any(|a| {
+            a.id == id
+                && a.status == Status::Waiting
+                && a.block == Some(Block::Question)
+                && a.session_alive
+                && self.ask_for(&a.id).is_none()
+        });
         if !sendable {
             self.reply = None;
             return false;
@@ -891,15 +930,11 @@ impl State {
             .get(self.selected)
             .map(|a| a.cwd.clone())
             .filter(|c| !c.is_empty());
-        host::open_command_pane_floating(
-            CommandToRun {
-                path: "sh".into(),
-                args: vec!["-l".into()],
-                cwd: cwd.map(Into::into),
-            },
-            None,
-            BTreeMap::new(),
-        );
+        let shell = host::get_session_environment_variables()
+            .get("SHELL")
+            .cloned()
+            .unwrap_or_default();
+        host::open_command_pane_floating(shell_command(&shell, cwd), None, BTreeMap::new());
         self.hidden = true;
         host::hide_self();
         true
@@ -1335,6 +1370,12 @@ impl State {
                 self.reply = None;
             }
         }
+        if let Some(r) = &self.followup {
+            let id = r.id.clone();
+            if !self.agents.iter().any(|a| a.id == id) {
+                self.followup = None;
+            }
+        }
     }
 
     /// Clears the notified gutter. Called when the panel becomes visible: the
@@ -1441,6 +1482,24 @@ mod tests {
     }
 
     #[test]
+    fn shell_command_uses_a_safe_selector_and_login_mode() {
+        let command = shell_command("/bin/zsh", Some("/tmp/project".into()));
+        assert_eq!(command.path.to_string_lossy(), "sh");
+        assert_eq!(command.args[0], "-c");
+        assert_eq!(command.args[2], "zj-agent-mob-shell");
+        assert_eq!(command.args[3], "/bin/zsh");
+        assert!(command.args[1].contains("exec \"$selected\" -l"));
+        assert_eq!(command.cwd.unwrap().to_string_lossy(), "/tmp/project");
+    }
+
+    #[test]
+    fn shell_selector_falls_back_in_order_without_eval() {
+        assert!(SHELL_SELECTOR.contains("for candidate in zsh bash sh"));
+        assert!(SHELL_SELECTOR.contains("command -v \"$candidate\""));
+        assert!(!SHELL_SELECTOR.contains("eval"));
+    }
+
+    #[test]
     fn parses_known_statuses_only() {
         for s in ["working", "waiting", "done", "idle", "idlewait", "compact", "failed"] {
             assert!(Status::parse(s).is_some(), "{} must parse", s);
@@ -1477,6 +1536,27 @@ mod tests {
     }
 
     /// Only `default` is suppressed; a risky mode must reach the row.
+    #[test]
+    fn direct_status_refreshes_existing_session_id_without_clearing_it() {
+        let mut s = state();
+        s.handle_status(&args(&[
+            ("pane_id", "1"),
+            ("status", "working"),
+            ("session_id", "old-session"),
+        ]));
+        s.handle_status(&args(&[
+            ("pane_id", "1"),
+            ("status", "waiting"),
+            ("session_id", "new-session"),
+            ("block", "question"),
+        ]));
+        assert_eq!(s.agents.len(), 1);
+        assert_eq!(s.agents[0].session_id, "new-session");
+
+        s.handle_status(&args(&[("pane_id", "1"), ("status", "waiting"), ("session_id", "")]));
+        assert_eq!(s.agents[0].session_id, "new-session");
+    }
+
     #[test]
     fn perm_mode_is_carried_and_updated() {
         let mut s = state();

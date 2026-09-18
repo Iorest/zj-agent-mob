@@ -1,8 +1,9 @@
 # Full-feature tour of zj-agent-mob.
 #
 # The tape deliberately types almost nothing: it starts Zellij, then a staging
-# script drives the session from outside via `zellij action`. See docs/demo.md
-# for why (Zellij's modal input makes keystroke-driven tapes non-deterministic).
+# script drives the session from outside via `zellij action`. The development
+# notes explain why (Zellij's modal input makes keystroke-driven tapes
+# non-deterministic).
 #
 #   vhs scripts/demo/tour.tape
 

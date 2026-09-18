@@ -4,8 +4,9 @@
     python3 scripts/demo/render-frames.py <framedir> <out.gif>
 
 `<framedir>` holds the frames captured by capture-tour.sh: one `NNNN.txt` per
-frame, each an ANSI dump of the panel taken with `zellij action dump-screen
---ansi`, plus a `NNNN.hold` naming how many frame-times that frame stays up.
+frame, each a plain-text dump of the panel taken with `zellij action dump-screen
+--path`, plus a `NNNN.hold` naming how many frame-times that frame stays up.
+The renderer applies the local terminal colours again when rasterising the text.
 
 No terminal is recorded and no browser is involved: the tour is driven with
 `zellij action`, the panel's own output is read back as text, and this turns
@@ -106,8 +107,9 @@ def xterm_rgb(n):
     return (v, v, v)
 
 
-# Colour is applied here rather than captured, because `dump-screen --ansi`
-# returns ZERO BYTES for a plugin pane on this Zellij (verified: the same call
+# Colour is applied here rather than captured, because the capture path reads
+# plain text from the plugin pane (and `dump-screen --ansi` returns no useful
+# styled output for it on this Zellij; the same call
 # against a terminal pane in the same session returns styled output). The panel
 # is a plugin pane, so its colours cannot be read back at all and the dump is
 # plain text.

@@ -7,8 +7,9 @@ This project has two independent pieces:
 
 `scripts/zj-agent-mob-hook.py` is the recommended entry point for new
 integrations. `scripts/zj-agent-mob-hook.sh` remains a supported POSIX shell
-entry point with the same behavior. Hooks are configured manually so either
-entry point can be used by any coding agent that sends JSON on stdin.
+entry point. Both share the core pipe/spool status protocol, but they are not
+identical parsers: Python supports more common field aliases and usage/context
+extensions, while the shell hook focuses on core fields and requires `jq`.
 
 - [Install the plugin and hook](#install-the-plugin-and-hook)
 - [Register the plugin with Zellij](#register-the-plugin-with-zellij)
@@ -39,12 +40,13 @@ chmod +x ~/.config/zj-agent-mob/zj-agent-mob-hook.py
 ```
 
 From a source checkout, use either script under `scripts/` as the hook source.
-The Python hook is recommended for new integrations; both hooks expose the same
-status, spool, notification, permission, follow-up, and peer-context behavior.
+The Python hook is recommended for new integrations. The shell hook shares the
+core status, spool, notification, permission, follow-up, and peer-context
+protocol, but supports a narrower input field set and requires `jq` on `PATH`.
 
-The Python hook requires Python 3.9 or newer; the shell hook requires a POSIX
-shell. Both require `zellij` on `PATH` when an agent is running inside Zellij.
-The Python hook does not require `jq`.
+The Python hook requires Python 3.12 or newer; the shell hook requires a POSIX
+shell and `jq` on `PATH`. Both require `zellij` on `PATH` when an agent is
+running inside Zellij. The Python hook uses only the Python standard library.
 
 ## Register the plugin with Zellij
 
@@ -91,8 +93,9 @@ layout {
 ## Agent hook integration
 
 The hook reads one JSON object from stdin and exits `0` in every failure case.
-Set `ZJ_AGENT_TOOL` explicitly; an empty value is ignored so that an unlabelled
-integration cannot create misleading rows.
+Set `ZJ_AGENT_TOOL` explicitly. The Python hook ignores an empty value; the shell
+hook defaults an unset value to `claude`, so explicit configuration keeps labels
+consistent.
 
 Use this command, with an absolute path if the agent does not expand `$HOME`:
 
@@ -164,10 +167,13 @@ in the installed Codex version.
 
 ### CodeBuddy
 
-CodeBuddy integrations are manual. In `~/.codebuddy/settings.json`, add the
-selected hook command in the event-hook section provided by your CodeBuddy
-version. The example uses Python; replace it with the shell command if
-preferred:
+CodeBuddy integrations are manual. The following JSON is an illustrative
+placeholder for the command shape only; it is not a guarantee of the official
+CodeBuddy hook schema or settings path. Use the installed CodeBuddy version's
+official documentation as the source of truth for its event names, nesting,
+and field names. Add the selected hook command in the event-hook section
+provided by that version. The example uses Python; replace it with the shell
+command if preferred:
 
 ```json
 {
@@ -179,12 +185,25 @@ preferred:
 }
 ```
 
-Keep the command shape and `ZJ_AGENT_TOOL=codebuddy`; adapt only the surrounding
-key names to the current CodeBuddy hook schema. Consult each agent's current
-official documentation for its settings path, event names, and schema. CodeBuddy
-is process-discovered
-by the plugin, but it cannot report live status until its hook calls this
-entry point.
+Keep the command shape and `ZJ_AGENT_TOOL=codebuddy`; adapt the surrounding
+path, key names, and event payload to the current CodeBuddy hook schema. Consult
+the current official documentation for the settings path, event names, and
+schema. CodeBuddy is process-discovered by the plugin, but it cannot report live
+status until its hook calls this entry point.
+
+The current CodeBuddy hook contract supports `PermissionRequest` decisions and
+`UserPromptSubmit` `hookSpecificOutput.additionalContext`. A queued panel
+follow-up is delivered at `Stop`: the Python and shell hooks emit CodeBuddy's
+`{"continue":false,"reason":"..."}` response, rather than Claude/Codex's
+legacy `{"decision":"block",...}` shape. This keeps the agent working with the
+queued instruction; it is not a synthetic user message. CodeBuddy hooks do not
+provide a documented generic output field for asking the user a new question.
+For a generic `question` notification already waiting on pane stdin, use the
+panel's `y`/`m` answer actions; `a`/`r`/`A` are reserved for parked tool/plan
+permission requests. CodeBuddy `Elicitation`/`ElicitationResult` has no
+published hook answer protocol and remains in its native UI/pane. The `t` key
+opens a floating login shell using the Zellij session's `$SHELL`, then falls
+back to `zsh`, `bash`, and `sh` when available.
 
 ### Verify an integration
 

@@ -1,10 +1,10 @@
 # Roadmap: deeper hook integration
 
-An inventory of the hook surface we consume today versus what the hooks contract
-actually offers (https://learn.chatgpt.com/docs/hooks), and ranked proposals for
-the unused parts. Companion to [roadmap-next.md](roadmap-next.md), which ranks
-user-facing features; this ranks *transport-level* capability we are leaving on
-the table.
+An inventory of the hook surface we consume today versus the additional
+transport capabilities exposed by supported agent hook systems, followed by
+ranked proposals for gaps and follow-up work. This document focuses on
+transport-level capability; the user-facing panel behavior is documented in
+[README.md](../README.md) and [how-it-works.md](how-it-works.md).
 
 - [What we consume today](#what-we-consume-today)
 - [Unused surface, inventoried](#unused-surface-inventoried)
@@ -13,9 +13,9 @@ the table.
 - [Sequencing](#sequencing)
 - [Build notes](#build-notes)
 
-> **Status: H1-H7 are built and shipped.** Each proposal below keeps its original
-> text; where the build deviated from the plan, a **Built** note says how and
-> why. [Build notes](#build-notes) collects what only showed up in the doing.
+> **Status:** This is a mixed inventory of current behavior and proposals. A
+> **Built** note is retained only where the corresponding behavior is verified in
+> the current hooks; proposal text below is not itself a runtime contract.
 
 ## What we consume today
 
@@ -30,27 +30,28 @@ status (see [how-it-works.md](how-it-works.md#status-transport)):
 | `Notification`, `PermissionRequest` | `waiting` / `idlewait` + block reason |
 | `PreCompact` / `PostCompact` | `compact` status |
 | `SubagentStart/Stop`, `TaskCreated/Completed` | counter deltas |
-| Input fields | `hook_event_name`, `session_id`, `cwd`, `transcript_path`, `tool_name`, `tool_input.*`, `last_assistant_message`, `message`, `notification_type`, `permission_mode`, `agent_type`, `error_*`, `trigger` |
-| Output contract | `PermissionRequest` decision (`allow`/`deny`), opt-in via `ZJ_AGENT_APPROVE` |
-| Config | user-level `settings.json` / `hooks.json`, `async: true` everywhere except `PermissionRequest`, `Notification` matcher scoping |
+| Input fields | Core event/session/cwd/tool fields; the Python adapter also accepts common aliases, model/usage/context fields, and nested tool calls |
+| Output contract | `PermissionRequest` decision (`allow`/`deny`), enabled by default and disabled with `ZJ_AGENT_APPROVE=0` |
+| Config | Agent-specific manual configuration; event names, nesting, and async behavior depend on the host agent |
 
-We are read-heavy and write-shy: of everything a hook is allowed to *say back*
-to the agent, we use exactly one decision on one event. Everything below is
-about the other direction.
+We are read-heavy and write-shy: hook output is limited to permission
+verdicts, same-directory context, and a queued follow-up response. We do not
+try to synthesize arbitrary user messages or interactive questions from hook
+stdout. Everything below is about the other direction.
 
 ## Unused surface, inventoried
 
 | Capability | Contract | Today |
 |---|---|---|
-| `Interrupt` event | fires when the user interrupts a turn (Esc) | falls through `*) exit 0` - **a real gap, see H1** |
-| `tool_use_id` | correlates `PreToolUse` with its `PostToolUse` | ignored |
-| `tool_response` on `PostToolUse` | the tool's actual result | ignored |
-| `turn_id` | groups all events of one turn | ignored |
-| `model` | which model the session runs | ignored |
-| `Stop` → `decision: "block"` + prompt text | forces the agent to continue with injected instructions | unused |
-| `additionalContext` (SessionStart, UserPromptSubmit, PostToolUse) | inject up to ~2500 tokens of context into the model | unused |
-| `updatedInput` on `PreToolUse` | rewrite a tool call before it runs | unused (deliberately, see below) |
-| `permissionDecision` beyond allow/deny | approve *without* user interaction, i.e. rules | only interactive approve |
+| `Interrupt` event | fires when the user interrupts a turn (Esc) | not normalized by the current adapters; see H1 |
+| `tool_use_id` | correlates `PreToolUse` with its `PostToolUse` | used by the Python and shell adapters for tool timing |
+| `tool_response` on `PostToolUse` | the tool's actual result | not forwarded as a full result |
+| `turn_id` | groups all events of one turn | not currently used |
+| `model` | which model the session runs | forwarded when available; Python supports broader model shapes |
+| `Stop` → follow-up response + prompt text | forces the agent to continue with injected instructions | queued follow-ups use CodeBuddy's `continue: false`; Claude/Codex retain `decision: "block"` |
+| `additionalContext` (SessionStart, UserPromptSubmit, PostToolUse) | inject context into the model | used for same-directory peer context on `UserPromptSubmit` only |
+| `updatedInput` on `PreToolUse` | rewrite a tool call before it runs | unused deliberately |
+| `permissionDecision` beyond allow/deny | approve without user interaction, i.e. rules | allow-only rules are supported |
 | `statusMessage` on hook config | shown in the agent's UI while a hook runs | unused |
 | `type: "mcp_tool"` hooks | call an MCP tool instead of a command | unused |
 | Project-level discovery (`<repo>/.codex/hooks.json`) | per-repo hooks | user-level only |
@@ -58,9 +59,9 @@ about the other direction.
 
 ## Proposals
 
-Ranked by value over effort. S/M/L sizing as in roadmap-next.md.
+Ranked by value over effort. S/M/L sizing is relative within this document.
 
-### H1. Handle `Interrupt`: stop lying after Esc (S) - **build this first**
+### H1. Handle `Interrupt`: stop lying after Esc (S) - **not yet implemented**
 
 Today an interrupted agent keeps its `working` row until the spool record ages
 out, because `Interrupt` hits the catch-all `exit 0`. That is a wrong status on
@@ -72,11 +73,10 @@ wants input - the user cut it off mid-answer) plus a `detail=interrupted` so the
 row says why. Register the event in both hook adapters. No new plumbing; the pipe
 and spool paths already carry it.
 
-> Yes
+> Not yet
 
-**Built** as planned, plus `block=idle` so the row says *why* it wants input
-rather than only that it does. Registered in both hook adapters. Verified live: an
-`Interrupt` event now reports `status=idlewait detail=interrupted block=idle`.
+No adapter branch currently maps `Interrupt`; it remains a documented gap for
+future implementation and verification.
 
 ### H2. In-flight tool timing via `tool_use_id` (S/M)
 
@@ -108,7 +108,7 @@ the agent that we already have the read side for: the panel knows the moment a
 turn ends.
 
 Flow, mirroring the existing verdict-file pattern
-([how-it-works.md](how-it-works.md#answering-permission-prompts)):
+([how-it-works.md](how-it-works.md#permission-prompts)):
 
 1. Panel key (e.g. <kbd>m</kbd> for "message") prompts for a line, writes it to
    `$TMPDIR/zj-agent-mob/followup.<session>.<pane_id>` via `run_command`.
@@ -117,8 +117,8 @@ Flow, mirroring the existing verdict-file pattern
    `detail=followup: <text>` instead of `done`.
 3. Absent: today's behaviour, byte for byte.
 
-Opt-in (`ZJ_AGENT_FOLLOWUP=1`) for the same reason `ZJ_AGENT_APPROVE` is: it is
-a path where the panel changes what the agent does, not just what we display.
+This is enabled by default because it is a path where the panel changes what
+the agent does, not just what we display; set `ZJ_AGENT_FOLLOWUP=0` to opt out.
 This subsumes roadmap-next P5 ("reply without leaving the panel") with far less
 machinery than driving the pane's stdin, and it works cross-session because the
 file, not a pipe, is the transport.
@@ -171,8 +171,8 @@ files.
 
 Transport: the spool already holds every agent's `cwd` and task; the hook reads
 its own directory siblings (no new state), and only on `UserPromptSubmit`, never
-on tool events. Strictly informational, capped to one line, opt-in
-(`ZJ_AGENT_CONTEXT=1`) because it spends the agent's tokens.
+on tool events. Strictly informational, capped to a few peers, enabled by
+default (`ZJ_AGENT_CONTEXT=0` opts out) because it spends the agent's tokens.
 
 > Yes, make this default, no opt-in
 
@@ -210,10 +210,9 @@ the `PermissionRequest` wait stops being on the critical path there too.
 
 > Yes
 
-**Built**: all three synchronous hooks carry a `statusMessage`. The async audit
-found the count had grown from one synchronous hook to three, which H3 and H5
-required - that is a real cost increase, and the [cost per turn](how-it-works.md#cost-per-turn)
-table now states it.
+**Not verified as a shared contract.** `statusMessage` depends on the host agent's
+current hook schema and is not emitted by these adapter scripts. Keep this as a
+host-specific follow-up rather than claiming all integrations support it.
 
 ## What not to build
 
@@ -228,7 +227,7 @@ table now states it.
 - **`mcp_tool` hooks as transport.** `zellij pipe` is already zero-config and
   session-scoped; an MCP hop adds a server dependency for no reach we lack.
 - **Project-level `hooks.json`.** Per-repo hook installs would fork the install
-  state the panel reports on ([how-it-works.md](how-it-works.md#the-install-screen))
+  state the panel reports on ([setup.md](setup.md#install-the-plugin-and-hook))
   and monitoring is a per-user concern, not a per-repo one.
 
 ## Sequencing

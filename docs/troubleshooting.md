@@ -31,8 +31,10 @@ cp target/wasm32-wasip1/release/zj-agent-mob.wasm \
   ~/.config/zellij/plugins/zj-agent-mob.wasm
 ```
 
-The underscored `zj_agent_mob.wasm` library artifact is not loadable. Also
-confirm the path in `LaunchOrFocusPlugin` points to the copied file.
+The Cargo library target is for native tests and is not a loadable Zellij
+plugin. Only the hyphenated WASI binary `zj-agent-mob.wasm` has the required
+plugin exports. Also confirm the path in `LaunchOrFocusPlugin` points to the
+copied file.
 
 ## Changes to the plugin have no effect
 
@@ -53,8 +55,8 @@ cache metadata is acceptable.
 Compare the build and copied artifact before investigating cache state:
 
 ```sh
-md5 -q target/wasm32-wasip1/release/zj-agent-mob.wasm \
-  ~/.config/zellij/plugins/zj-agent-mob.wasm
+cmp -s target/wasm32-wasip1/release/zj-agent-mob.wasm \
+  ~/.config/zellij/plugins/zj-agent-mob.wasm && echo "artifacts match"
 ```
 
 ## The panel says no agents
@@ -65,10 +67,12 @@ Work through these checks in order:
    `ZELLIJ_SESSION_NAME`; outside a pane it intentionally exits.
 2. **Is the hook registered for a new agent session?** Hook configuration is
    read at session start. Restart agents after changing settings.
-3. **Is `ZJ_AGENT_TOOL` set?** The Python hook ignores events when it is empty.
+3. **Is `ZJ_AGENT_TOOL` set?** The Python hook ignores events when it is empty;
+   the shell hook defaults an unset value to `claude`, but explicit configuration
+   avoids ambiguous labels.
 4. **Is the selected hook runtime available?** For Python, run
-   `python3 --version`; for the shell hook, run `sh --version` or use a POSIX
-   shell. Both require `command -v zellij` in the agent's pane.
+   `python3 --version`; for the shell hook, run `command -v sh` and
+   `command -v jq`. Both require `command -v zellij` in the agent's pane.
 5. **Can the hook log an event?** Set `ZJ_AGENT_DEBUG=1`, start a new turn, and
    inspect `~/.cache/zj-agent-mob/hook.log`.
 6. **Can the panel be driven directly?** This bypasses the agent integration:
@@ -141,8 +145,9 @@ The direct event smoke test is:
 ```sh
 printf '%s\n' '{"event":"SessionStart","session_id":"test","cwd":"'$PWD'"}' \
   | env ZJ_AGENT_TOOL=manual python3 ~/.config/zj-agent-mob/zj-agent-mob-hook.py
-# Or: printf '%s\\n' '{"event":"SessionStart"}' \\
-#   | env ZJ_AGENT_TOOL=manual ~/.config/zj-agent-mob/zj-agent-mob-hook.sh
+# Or:
+printf '%s\n' '{"hook_event_name":"SessionStart"}' \
+  | env ZJ_AGENT_TOOL=manual ~/.config/zj-agent-mob/zj-agent-mob-hook.sh
 ```
 
 If the command exits successfully but the panel remains empty, run the hook
@@ -192,7 +197,7 @@ The spool contains task summaries and is created as
 `$TMPDIR/zj-agent-mob-<uid>/status` with mode `0700`. Check the directory mode:
 
 ```sh
-chmod 700 "${TMPDIR:-/tmp}/zj-agent-mob-$(id -u)"
+chmod 700 "${TMPDIR:-/tmp}/zj-agent-mob-$(id -u)/status"
 ```
 
 Set `ZJ_AGENT_SPOOL=0` to disable cross-session task records. Status for an

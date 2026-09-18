@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use zj_agent_mob::testing::Sim;
+
 // ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------
@@ -245,9 +247,70 @@ impl Hook {
             code: out.status.code().unwrap_or(-1),
         }
     }
+
+    fn exec_shell(&self, json: &str, env: &[(&str, &str)]) -> Run {
+        let capture = self.sandbox.path("capture");
+        let _ = fs::remove_file(&capture);
+        fs::write(&capture, "").expect("init capture");
+        let path_var = format!(
+            "{}:{}",
+            self.sandbox.path("bin").display(),
+            std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+        );
+        let mut cmd = Command::new("sh");
+        cmd.arg(hook_path())
+            .env_clear()
+            .env("PATH", path_var)
+            .env("ZJ_TEST_CAPTURE", &capture)
+            .env("ZELLIJ", "0")
+            .env("ZELLIJ_PANE_ID", "3")
+            .env("ZELLIJ_SESSION_NAME", "parity")
+            .env("ZJ_AGENT_TOOL", "codebuddy")
+            .env("ZJ_AGENT_PLUGIN", "file:/plugin.wasm")
+            .env("ZJ_AGENT_APPROVE", "0")
+            .env("ZJ_AGENT_SPOOL", "0")
+            .env("ZJ_AGENT_FANOUT", "0")
+            .env("HOME", self.sandbox.path("home"))
+            .env("ZJ_AGENT_SPOOL_DIR", self.sandbox.path("spool"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
+        let mut child = cmd.spawn().expect("spawn shell hook");
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(json.as_bytes()).expect("write hook input");
+        }
+        let out = child.wait_with_output().expect("wait shell hook");
+        let raw = fs::read_to_string(&capture).unwrap_or_default();
+        let pipes = raw.lines().filter(|l| !l.trim().is_empty()).map(parse_pipe).collect();
+        Run {
+            pipes,
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            code: out.status.code().unwrap_or(-1),
+        }
+    }
 }
 
 /// Parses one recorded `zellij` argv line into a Pipe.
+fn consume_status(sim: &mut Sim, run: &Run) {
+    let pipe = run
+        .status_pipe()
+        .unwrap_or_else(|| panic!("expected status pipe: {run:?}"));
+    assert!(sim.status(&pipe.args), "Rust rejected status: {:?}", pipe.args);
+}
+
+fn assert_core_agent(sim: &Sim, status: &str, task: Option<&str>, detail: Option<&str>, block: Option<&str>) {
+    assert_eq!(sim.agent_count(), 1);
+    assert_eq!(sim.agent_ids(), vec![("parity".into(), 3)]);
+    assert_eq!(sim.status_of(0), status);
+    assert_eq!(sim.session_id_of(0), "new-session");
+    assert_eq!(sim.task_of(0), task);
+    assert_eq!(sim.detail_of(0), detail);
+    assert_eq!(sim.block_of(0), block);
+}
+
 fn parse_pipe(line: &str) -> Pipe {
     let toks: Vec<&str> = line.split_whitespace().collect();
     let after = |flag: &str| -> String {
@@ -525,6 +588,341 @@ fn codebuddy_uses_the_same_status_contract() {
 }
 
 #[test]
+fn codebuddy_uses_its_permission_decision_shape() {
+    let h = Hook::new();
+    let rules = h.path("approve.rules");
+    fs::write(&rules, "allow Read\n").expect("write rules");
+    let r = h
+        .env("ZJ_AGENT_TOOL", "codebuddy")
+        .env("ZJ_AGENT_APPROVE_RULES", &rules)
+        .run(
+            &serde_json::json!({
+                "hook_event_name": "PermissionRequest",
+                "toolCall": {"name": "Read", "args": {"file_path": "/tmp/z"}},
+            })
+            .to_string(),
+        );
+    assert!(
+        r.stdout.contains("\"permissionDecision\":\"allow\""),
+        "expected CodeBuddy permissionDecision, got {:?}",
+        r.stdout
+    );
+    assert!(
+        !r.stdout.contains("behavior"),
+        "must not emit Claude's shape: {:?}",
+        r.stdout
+    );
+}
+
+#[test]
+fn python_and_shell_hooks_match_the_core_codebuddy_contract() {
+    let events = [
+        serde_json::json!({
+            "event": "SessionStart",
+            "session_id": "cb-session",
+            "cwd": "/tmp/project",
+            "model": "model-x",
+        }),
+        serde_json::json!({
+            "event_name": "UserPromptSubmit",
+            "session_id": "cb-session",
+            "cwd": "/tmp/project",
+            "prompt": "inspect the changes",
+        }),
+        serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": "cb-session",
+            "cwd": "/tmp/project",
+            "toolCall": {"name": "shell", "args": {"command": "printf ok"}},
+        }),
+        serde_json::json!({
+            "event": "PostToolUseFailure",
+            "session_id": "cb-session",
+            "cwd": "/tmp/project",
+            "toolCall": {"name": "shell", "arguments": {"command": "false"}},
+            "error_message": "command failed",
+        }),
+        serde_json::json!({
+            "event": "Notification",
+            "session_id": "cb-session",
+            "cwd": "/tmp/project",
+            "message": "Please choose a target",
+        }),
+        serde_json::json!({
+            "event": "Notification",
+            "session_id": "cb-session",
+            "cwd": "/tmp/project",
+            "notification_type": "idle_prompt",
+            "message": "still there?",
+        }),
+        serde_json::json!({
+            "event": "PermissionRequest",
+            "session_id": "cb-session",
+            "cwd": "/tmp/project",
+            "toolCall": {"name": "shell", "args": {"command": "printf ok"}},
+        }),
+        serde_json::json!({
+            "event": "Stop",
+            "session_id": "cb-session",
+            "cwd": "/tmp/project",
+            "last_assistant_message": "completed the review\nwith details",
+        }),
+        serde_json::json!({
+            "event": "StopFailure",
+            "session_id": "cb-session",
+            "cwd": "/tmp/project",
+            "error_message": "the turn failed",
+        }),
+        serde_json::json!({
+            "event": "PreCompact",
+            "session_id": "cb-session",
+            "cwd": "/tmp/project",
+            "trigger": "manual",
+        }),
+        serde_json::json!({
+            "event": "SessionEnd",
+            "session_id": "cb-session",
+            "cwd": "/tmp/project",
+        }),
+    ];
+    let expected = [
+        ("idle", "", "", ""),
+        ("working", "inspect the changes", "", ""),
+        ("working", "", "shell printf ok", ""),
+        ("working", "", "shell false (failed)", ""),
+        ("waiting", "", "Please choose a target", "question"),
+        ("idlewait", "", "still there?", "idle"),
+        ("waiting", "", "needs approval: shell printf ok", "tool"),
+        ("done", "completed the review", "", ""),
+        ("failed", "", "the turn failed", ""),
+        ("compact", "", "compacting context (manual)", ""),
+        ("ended", "", "", ""),
+    ];
+    for (index, (event, (status, task, detail, block))) in events.iter().zip(expected).enumerate() {
+        let json = event.to_string();
+        let python_hook = Hook::new();
+        let python = python_hook
+            .env("ZELLIJ_SESSION_NAME", "parity")
+            .env("ZJ_AGENT_TOOL", "codebuddy")
+            .env("ZJ_AGENT_APPROVE", "0")
+            .env("ZJ_AGENT_SPOOL", "0")
+            .env("ZJ_AGENT_FANOUT", "0")
+            .run(&json);
+        let shell_hook = Hook::new();
+        let shell = shell_hook.exec_shell(&json, &[]);
+        assert_eq!(python.code, 0, "Python event {index}: {python:?}");
+        assert_eq!(shell.code, 0, "Shell event {index}: {shell:?}");
+        for (key, expected) in [
+            ("pane_id", "3"),
+            ("session", "parity"),
+            ("tool", "codebuddy"),
+            ("status", status),
+            ("session_id", "cb-session"),
+            ("cwd", "/tmp/project"),
+            ("task", task),
+            ("detail", detail),
+            ("block", block),
+        ] {
+            assert_eq!(python.field(key), expected, "Python field {key}, event {index}: {json}");
+            assert_eq!(shell.field(key), expected, "Shell field {key}, event {index}: {json}");
+        }
+    }
+}
+
+#[test]
+fn claude_and_codex_aliases_match_rust_fields() {
+    let cases = [
+        (
+            "claude",
+            serde_json::json!({
+                "hook_event_name": "PreToolUse",
+                "conversationId": "claude-session",
+                "workspace": {"current_dir": "/work/claude"},
+                "model": {"display_name": "Claude Sonnet"},
+                "toolCall": {"name": "shell", "args": {"command": "printf ok"}},
+            }),
+        ),
+        (
+            "codex",
+            serde_json::json!({
+                "event": "PreToolUse",
+                "sessionId": "codex-session",
+                "current_dir": "/work/codex",
+                "model": {"id": "codex-model"},
+                "tool_call": {"name": "shell", "arguments": {"command": "printf ok"}},
+            }),
+        ),
+    ];
+    for (tool, event) in cases {
+        let json = event.to_string();
+        let python = Hook::new()
+            .env("ZELLIJ_SESSION_NAME", "parity")
+            .env("ZJ_AGENT_TOOL", tool)
+            .env("ZJ_AGENT_SPOOL", "0")
+            .env("ZJ_AGENT_FANOUT", "0")
+            .run(&json);
+        let shell = Hook::new().exec_shell(&json, &[("ZJ_AGENT_TOOL", tool), ("ZJ_AGENT_HEARTBEAT", "1")]);
+        for key in ["status", "session_id", "cwd", "model", "task", "detail"] {
+            assert_eq!(python.field(key), shell.field(key), "{tool} field {key}");
+        }
+        assert_eq!(python.field("status"), "working");
+        assert_eq!(python.field("detail"), "shell printf ok");
+    }
+}
+
+#[test]
+fn real_python_and_shell_outputs_drive_the_rust_state_machine() {
+    let events = [
+        serde_json::json!({
+            "event": "SessionStart",
+            "session_id": "old-session",
+            "cwd": "/tmp/project",
+            "model": {"display_name": "model-x"},
+        }),
+        serde_json::json!({
+            "event_name": "UserPromptSubmit",
+            "conversation_id": "new-session",
+            "workspace": {"current_dir": "/tmp/project"},
+            "prompt": "inspect the changes",
+            "model": {"id": "model-x"},
+        }),
+        serde_json::json!({
+            "event": "Notification",
+            "sessionId": "new-session",
+            "workspace": {"cwd": "/tmp/project"},
+            "message": "Please choose a target",
+        }),
+        serde_json::json!({
+            "event": "SubagentStart",
+            "session_id": "new-session",
+            "agent_id": "sub-1",
+            "agent_type": "Explore",
+        }),
+        serde_json::json!({
+            "event": "PermissionRequest",
+            "session_id": "new-session",
+            "tool_call": {"name": "shell", "arguments": {"command": "printf ok"}},
+        }),
+        serde_json::json!({
+            "event": "Stop",
+            "session_id": "new-session",
+            "last_assistant_message": "completed the review",
+        }),
+        serde_json::json!({
+            "event": "SessionEnd",
+            "session_id": "new-session",
+        }),
+    ];
+
+    for implementation in ["python", "shell"] {
+        let hook = Hook::new();
+        let mut sim = Sim::new("parity", &["parity"]);
+        for (index, event) in events.iter().enumerate() {
+            let json = event.to_string();
+            let run = if implementation == "python" {
+                hook.env("ZELLIJ_SESSION_NAME", "parity")
+                    .env("ZJ_AGENT_TOOL", "codebuddy")
+                    .env("ZJ_AGENT_APPROVE", "0")
+                    .env("ZJ_AGENT_SPOOL", "0")
+                    .env("ZJ_AGENT_FANOUT", "0")
+                    .run(&json)
+            } else {
+                hook.exec_shell(&json, &[])
+            };
+            assert_eq!(run.code, 0, "{implementation} event {index}: {run:?}");
+            consume_status(&mut sim, &run);
+            match index {
+                0 => {
+                    assert_eq!(sim.agent_count(), 1);
+                    assert_eq!(sim.agent_ids(), vec![("parity".into(), 3)]);
+                    assert_eq!(sim.status_of(0), "idle");
+                    assert_eq!(sim.session_id_of(0), "old-session");
+                }
+                1 => assert_core_agent(&sim, "working", Some("inspect the changes"), None, None),
+                2 => assert_core_agent(
+                    &sim,
+                    "waiting",
+                    Some("inspect the changes"),
+                    Some("Please choose a target"),
+                    Some("question"),
+                ),
+                3 => assert_eq!(sim.counters()[0].1, 1),
+                4 => assert_core_agent(
+                    &sim,
+                    "waiting",
+                    Some("inspect the changes"),
+                    Some("needs approval: shell printf ok"),
+                    Some("tool"),
+                ),
+                5 => assert_core_agent(
+                    &sim,
+                    "done",
+                    Some("completed the review"),
+                    Some("needs approval: shell printf ok"),
+                    None,
+                ),
+                6 => assert_eq!(sim.agent_count(), 0),
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
+#[test]
+fn real_permission_asks_are_consumable_by_rust() {
+    for implementation in ["python", "shell"] {
+        let hook = Hook::new();
+        let mut sim = Sim::new("parity", &["parity"]);
+        let start = serde_json::json!({
+            "event": "SessionStart",
+            "session_id": "permission-session",
+        })
+        .to_string();
+        let start_run = if implementation == "python" {
+            hook.env("ZELLIJ_SESSION_NAME", "parity")
+                .env("ZJ_AGENT_TOOL", "codebuddy")
+                .env("ZJ_AGENT_APPROVE", "0")
+                .env("ZJ_AGENT_SPOOL", "0")
+                .env("ZJ_AGENT_FANOUT", "0")
+                .run(&start)
+        } else {
+            hook.exec_shell(&start, &[])
+        };
+        consume_status(&mut sim, &start_run);
+
+        let request = serde_json::json!({
+            "event": "PermissionRequest",
+            "session_id": "permission-session",
+            "toolCall": {"name": "shell", "args": {"command": "printf ok"}},
+        })
+        .to_string();
+        let run = if implementation == "python" {
+            hook.env("ZELLIJ_SESSION_NAME", "parity")
+                .env("ZJ_AGENT_TOOL", "codebuddy")
+                .env("ZJ_AGENT_APPROVE", "1")
+                .env("ZJ_AGENT_APPROVE_TIMEOUT", "0")
+                .env("ZJ_AGENT_SPOOL", "0")
+                .env("ZJ_AGENT_FANOUT", "0")
+                .run(&request)
+        } else {
+            hook.exec_shell(
+                &request,
+                &[("ZJ_AGENT_APPROVE", "1"), ("ZJ_AGENT_APPROVE_TIMEOUT", "0")],
+            )
+        };
+        consume_status(&mut sim, &run);
+        let ask = run.ask_pipe().expect("permission request should park an ask");
+        assert!(sim.ask(&ask.args), "Rust rejected ask: {:?}", ask.args);
+        assert!(sim.has_ask(0));
+        assert_eq!(sim.agent_ids(), vec![("parity".into(), 3)]);
+        assert_eq!(sim.status_of(0), "waiting");
+        assert_eq!(sim.session_id_of(0), "permission-session");
+        assert_eq!(sim.detail_of(0), Some("needs approval: shell printf ok"));
+        assert_eq!(sim.block_of(0), Some("tool"));
+    }
+}
+
+#[test]
 fn the_plugin_path_can_be_overridden() {
     let r = Hook::new().env("ZJ_AGENT_PLUGIN", "file:/custom.wasm").run(&ev("Stop"));
     assert_eq!(r.status_pipe().unwrap().plugin, "file:/custom.wasm");
@@ -544,6 +942,28 @@ fn stop_with_transcript(h: &Hook, lines: &[serde_json::Value]) -> String {
         "transcript_path": tr.to_string_lossy(),
     })
     .to_string()
+}
+
+#[test]
+fn transcript_noise_does_not_drop_the_stop_status() {
+    let h = Hook::new();
+    let json = stop_with_transcript(
+        &h,
+        &[
+            serde_json::Value::Null,
+            serde_json::json!("noise"),
+            serde_json::json!(["not", "an", "object"]),
+            serde_json::json!({"type": "last-prompt", "lastPrompt": "fallback"}),
+            serde_json::json!({"type": "ai-title", "aiTitle": "real title"}),
+        ],
+    );
+    let transcript = h.path("transcript.jsonl");
+    let original = fs::read_to_string(&transcript).expect("read transcript");
+    fs::write(&transcript, format!("{original}not-json\n")).expect("add malformed record");
+    let r = h.run(&json);
+    assert_eq!(r.code, 0);
+    assert_eq!(r.field("status"), "done");
+    assert_eq!(r.field("task"), "real title");
 }
 
 #[test]
@@ -774,6 +1194,144 @@ fn the_hook_exits_zero_for_every_event() {
     ] {
         assert_eq!(run(&ev(event)).code, 0, "{event} exited non-zero");
     }
+}
+
+/// The retained POSIX hook must serialize values with the same comma-safe
+/// contract as the Python hook. A comma in a CodeBuddy cwd otherwise becomes a
+/// second, malformed field in both the pipe and cross-session spool record.
+#[test]
+fn shell_hook_sanitizes_comma_values_before_serializing() {
+    let h = Hook::new();
+    let capture = h.path("capture");
+    let spool = h.path("spool");
+    let path_var = format!(
+        "{}:{}",
+        h.path("bin").display(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+    );
+    let mut cmd = Command::new("sh");
+    cmd.arg(hook_path())
+        .env_clear()
+        .env("PATH", path_var)
+        .env("ZJ_TEST_CAPTURE", &capture)
+        .env("ZELLIJ", "0")
+        .env("ZELLIJ_PANE_ID", "3")
+        .env("ZELLIJ_SESSION_NAME", "codebuddy")
+        .env("ZJ_AGENT_TOOL", "codebuddy")
+        .env("ZJ_AGENT_PLUGIN", "file:/plugin.wasm")
+        .env("ZJ_AGENT_SPOOL_DIR", &spool)
+        .env("HOME", h.path("home"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = cmd.spawn().expect("spawn shell hook");
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(
+                serde_json::json!({
+                    "hook_event_name": "SessionStart",
+                    "session_id": "cb,session",
+                    "cwd": "/tmp/project,with-comma"
+                })
+                .to_string()
+                .as_bytes(),
+            )
+            .expect("write shell hook input");
+    }
+    assert_eq!(child.wait().expect("wait shell hook").code(), Some(0));
+    let raw = fs::read_to_string(capture).expect("shell hook capture");
+    let pipe = parse_pipe(raw.lines().next().expect("status pipe"));
+    assert_eq!(
+        pipe.args.get("cwd").map(String::as_str),
+        Some("/tmp/project with-comma")
+    );
+    assert_eq!(pipe.args.get("session_id").map(String::as_str), Some("cb session"));
+    let record = fs::read_to_string(spool.join("codebuddy.3")).expect("shell spool record");
+    assert!(record.contains("cwd=/tmp/project with-comma"), "{record}");
+    assert!(record.contains("session_id=cb session"), "{record}");
+}
+
+#[test]
+fn shell_hook_handles_codebuddy_tool_call_and_followup_protocol() {
+    let h = Hook::new();
+    let capture = h.path("capture");
+    let spool = h.path("spool");
+    let tmp = h.path("tmp");
+    fs::create_dir_all(tmp.join("zj-agent-mob")).expect("create followup dir");
+    fs::write(tmp.join("zj-agent-mob/followup.codebuddy.3"), "continue the review").expect("queue followup");
+    let path_var = format!(
+        "{}:{}",
+        h.path("bin").display(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+    );
+    let mut cmd = Command::new("sh");
+    cmd.arg(hook_path())
+        .env_clear()
+        .env("PATH", path_var)
+        .env("ZJ_TEST_CAPTURE", &capture)
+        .env("ZELLIJ", "0")
+        .env("ZELLIJ_PANE_ID", "3")
+        .env("ZELLIJ_SESSION_NAME", "codebuddy")
+        .env("ZJ_AGENT_TOOL", "codebuddy")
+        .env("ZJ_AGENT_APPROVE", "0")
+        .env("ZJ_AGENT_PLUGIN", "file:/plugin.wasm")
+        .env("ZJ_AGENT_SPOOL_DIR", &spool)
+        .env("TMPDIR", &tmp)
+        .env("HOME", h.path("home"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = cmd.spawn().expect("spawn shell hook");
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(
+                serde_json::json!({
+                    "event": "PermissionRequest",
+                    "toolCall": {"name": "shell", "args": {"command": "printf ok"}},
+                })
+                .to_string()
+                .as_bytes(),
+            )
+            .expect("write permission event");
+    }
+    let output = child.wait_with_output().expect("wait shell hook");
+    assert_eq!(output.status.code(), Some(0));
+    let raw = fs::read_to_string(capture).expect("shell hook capture");
+    let pipe = parse_pipe(raw.lines().next().expect("status pipe"));
+    assert_eq!(pipe.args.get("status").map(String::as_str), Some("waiting"));
+    assert_eq!(pipe.args.get("block").map(String::as_str), Some("tool"));
+    assert_eq!(
+        pipe.args.get("detail").map(String::as_str),
+        Some("needs approval: shell printf ok")
+    );
+
+    let mut cmd = Command::new("sh");
+    cmd.arg(hook_path())
+        .env_clear()
+        .env("PATH", format!("{}:{}", h.path("bin").display(), "/usr/bin:/bin"))
+        .env("ZJ_TEST_CAPTURE", h.path("capture"))
+        .env("ZELLIJ", "0")
+        .env("ZELLIJ_PANE_ID", "3")
+        .env("ZELLIJ_SESSION_NAME", "codebuddy")
+        .env("ZJ_AGENT_TOOL", "codebuddy")
+        .env("ZJ_AGENT_PLUGIN", "file:/plugin.wasm")
+        .env("ZJ_AGENT_SPOOL_DIR", &spool)
+        .env("TMPDIR", &tmp)
+        .env("HOME", h.path("home"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = cmd.spawn().expect("spawn shell stop hook");
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(ev("Stop").as_bytes()).expect("write stop event");
+    }
+    let output = child.wait_with_output().expect("wait shell stop hook");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"continue\":false") || stdout.contains("\"continue\": false"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("continue the review"), "{stdout}");
 }
 
 /// Even with zellij missing entirely, the hook must succeed silently.
@@ -1114,6 +1672,26 @@ fn approval_mode_sends_an_ask() {
 }
 
 /// Timing out must fall through to the agent's own prompt, not emit a decision.
+#[test]
+fn shell_permission_ask_sanitizes_commas_for_rust() {
+    let h = Hook::new();
+    let r = h.exec_shell(
+        &serde_json::json!({
+            "event": "PermissionRequest",
+            "toolCall": {
+                "name": "shell,tool",
+                "args": {"command": "printf one,two"},
+            },
+        })
+        .to_string(),
+        &[("ZJ_AGENT_APPROVE", "1"), ("ZJ_AGENT_APPROVE_TIMEOUT", "0")],
+    );
+    let ask = r.ask_pipe().expect("an agent-ask pipe");
+    assert_eq!(ask.args.get("tool_name").map(String::as_str), Some("shell tool"));
+    assert_eq!(ask.args.get("tool_arg").map(String::as_str), Some("printf one two"));
+    assert!(ask.args.get("verdict_file").is_some_and(|path| !path.contains(',')));
+}
+
 #[test]
 fn a_timeout_emits_no_decision() {
     let h = Hook::new();
@@ -2194,6 +2772,29 @@ fn a_queued_followup_is_delivered_at_stop() {
         !dir.join("followup..3").exists(),
         "a delivered follow-up must be consumed, not replayed every turn"
     );
+}
+
+#[test]
+fn codebuddy_followup_uses_continue_false() {
+    let h = Hook::new();
+    let tmp = h.path("tmp");
+    let dir = tmp.join("zj-agent-mob");
+    fs::create_dir_all(&dir).expect("create followup dir");
+    fs::write(dir.join("followup..3"), "now answer the question").expect("queue a followup");
+
+    let r = h.env("TMPDIR", &tmp).env("ZJ_AGENT_TOOL", "codebuddy").run(&ev("Stop"));
+    assert_eq!(r.field("status"), "working");
+    assert!(
+        r.stdout.contains("\"continue\":false"),
+        "expected CodeBuddy continue=false, got {:?}",
+        r.stdout
+    );
+    assert!(
+        !r.stdout.contains("decision"),
+        "must not emit deprecated decision: {:?}",
+        r.stdout
+    );
+    assert!(r.stdout.contains("now answer the question"));
 }
 
 /// With nothing queued, `Stop` behaves exactly as it did before.

@@ -14,9 +14,10 @@
 ## The hook entry point
 
 `scripts/zj-agent-mob-hook.py` is the recommended integration boundary, and
-`scripts/zj-agent-mob-hook.sh` is a compatible POSIX shell entry point. Agent
+`scripts/zj-agent-mob-hook.sh` is a supported POSIX shell entry point. Agent
 hook systems provide one JSON object on stdin and set `ZJ_AGENT_TOOL` to identify
-the caller:
+the caller. The Python hook supports a broader set of field aliases and
+usage/context extensions; the shell hook parses core fields and requires `jq`.
 
 ```sh
 env ZJ_AGENT_TOOL=claude \
@@ -25,17 +26,20 @@ env ZJ_AGENT_TOOL=claude \
 #   ~/.config/zj-agent-mob/zj-agent-mob-hook.sh
 ```
 
-Both hooks normalize the same common event, session, workspace, and tool-call
-fields, construct a bounded key/value payload, and exit `0` on malformed input,
-missing tools, or transport failures. Fail-open behavior is deliberate: status
-monitoring must never block an agent turn. Events without a non-empty tool label
-are ignored. The Python hook additionally accepts optional usage and context
-fields.
+Both hooks construct a bounded key/value payload and exit `0` on malformed
+input, missing tools, or transport failures. Fail-open behavior is deliberate:
+status monitoring must never block an agent turn. The Python hook ignores an
+empty `ZJ_AGENT_TOOL`; the shell hook defaults an unset value to `claude`, though
+explicitly setting the tool is recommended. The Python hook additionally accepts
+common field aliases and optional usage/context fields.
 
 Only agents inside Zellij are monitored. The hook requires a numeric
-`ZELLIJ_PANE_ID` and a `ZELLIJ_SESSION_NAME`; without that pane context it
-returns without writing status. (When present, `ZELLIJ` must be `0`.) A pane id
-is unique only within a session, so row identity is `(session, pane_id)`.
+`ZELLIJ_PANE_ID`; without that pane context it returns without writing status.
+`ZELLIJ_SESSION_NAME` is used for cross-session identity and addressing, but an
+empty session name still permits the current-session pipe path. The Python hook
+also ignores an explicit nonzero `ZELLIJ`; the shell hook relies on the pane id
+check. A pane id is unique only within a session, so row identity is
+`(session, pane_id)`.
 
 ## Status transport
 
@@ -48,9 +52,9 @@ zellij pipe --name agent-status \
 ```
 
 `zellij pipe --plugin` starts the plugin when necessary. There is no daemon or
-socket. Values are sanitized because `--args` is comma-separated; task and tool
-text is truncated to a bounded length and commas, equals signs, and control
-characters are removed.
+socket. Values are sanitized because `--args` is comma-separated; both hooks
+bound task/detail text, while the Python adapter applies the broader escaping
+rules for its supported fields.
 
 The event-to-status mapping is intentionally small:
 
@@ -84,15 +88,23 @@ the previous complete record or the new complete record. The directory is
 created with mode `0700` because records contain task summaries. Set
 `ZJ_AGENT_SPOOL=0` to disable this transport.
 
-The panel reads the spool while scanning process environments. A foreign row is
-polled every five seconds while it is visible. `waiting`, `failed`, and `done`
-are also fanned out directly to open panels so an urgent state does not wait for
-the next poll. Set `ZJ_AGENT_FANOUT=0` to use polling only.
+The panel reads the spool while scanning process environments. A live foreign
+row is polled every five seconds while it is visible. `waiting`, `idlewait`,
+`failed`, and `done` are also fanned out directly to open panels so an urgent
+state does not wait for the next poll. Set `ZJ_AGENT_FANOUT=0` to use polling
+only.
 
 The hooks cache Git repository/worktree identity per agent and cache in-flight
 tool start times to add a duration to slow tool calls. Cache and spool writes
 are atomic and best-effort; an unwritable temporary directory degrades to
 same-session pipe status.
+
+Rows keep the full `(session, pane_id)` identity. The hook record also carries
+`cwd`, `repo`, `wt`, and `branch`, so a foreign row can show its session or
+repository/worktree identity and launch a shell in its reported directory. Tab
+and pane titles come from the current session's `PaneUpdate`; a foreign row has
+no cross-session pane manifest and therefore keeps tab unknown rather than
+inferring it from the pane number or directory.
 
 ## State ownership and stale records
 
@@ -112,7 +124,8 @@ recycled pane id therefore cannot inherit another agent's status indefinitely.
 `working` and `compact` decay to `unknown` after roughly 60 seconds without a
 fresh event. A blocked or finished state can be re-confirmed by an unchanged
 record while its process remains alive. `found` is process discovery without a
-hook event; `gone` is a session that has exited.
+hook event. When an `unknown` row's session has exited, the panel displays it as
+`gone`; `gone` is not a wire status.
 
 ## Notifications
 
@@ -132,19 +145,26 @@ When an agent emits `PermissionRequest`, the hook sends an `agent-ask` pipe
 with a verdict-file path. The plugin writes `allow` or `deny` to that path; the
 hook polls it until `ZJ_AGENT_APPROVE_TIMEOUT` (30 seconds by default). A
 matching `allow <tool> [arg-prefix]` rule in
-`~/.config/zj-agent-mob/approve.rules` short-circuits the wait.
+`~/.config/zj-agent-mob/approve.rules` short-circuits the wait. The ask is also
+fanned out to registered foreign panels, while the verdict file and expiry stay
+bound to the original `(session, pane_id)`.
 
 A timed-out hook prints no decision and returns control to the agent's own
 prompt. This is safer than leaving a turn blocked. The panel only offers
-<kbd>a</kbd>/<kbd>r</kbd> while the verdict is still live. `plan`, `question`,
-and `idle` notifications are shown but cannot be answered as yes/no decisions
-from the panel.
+<kbd>a</kbd>/<kbd>r</kbd>/<kbd>A</kbd> while the verdict is still live; <kbd>y</kbd>
+and <kbd>m</kbd> are reserved for a generic `question` notification and never
+write into a parked permission or plan prompt. The question reply is best-effort
+pane input for an agent already waiting on stdin, not a generic hook answer
+protocol. CodeBuddy `Elicitation`/`ElicitationResult` has no documented hook
+answer schema, so those interactions remain in CodeBuddy's native UI/pane.
 
 ## Follow-ups and peer context
 
 <kbd>f</kbd> writes a follow-up file for the selected agent. At `Stop`, the hook
-consumes the file and returns a blocking follow-up decision, allowing the next
-instruction to continue the turn. Set `ZJ_AGENT_FOLLOWUP=0` to disable it.
+consumes the file and asks the agent to continue with that instruction. CodeBuddy
+uses `{"continue":false,"reason":"..."}`; Claude/Codex retain their compatible
+`decision:block` response. This is an agent continuation, not a synthetic user
+message. Set `ZJ_AGENT_FOLLOWUP=0` to disable it.
 
 At `UserPromptSubmit`, the hook can read active sibling records with the same
 `cwd` and add a short informational note. It names at most three peers and is
@@ -164,11 +184,14 @@ what actually happened.
 
 ## Hook cost
 
-Every recognized event performs at most one `zellij pipe` and one atomic spool
-write. `PreToolUse` and `PostToolUse` additionally update the in-flight timing
-record. Turn boundaries may read a bounded transcript tail; `UserPromptSubmit`
-may scan sibling records; `PermissionRequest` may read the rules file. Urgent
-cross-session fan-out runs only for `waiting`, `failed`, `idlewait`, and `done`.
+A recognized event performs at most one current-session status `zellij pipe`
+and one atomic spool write. `PermissionRequest` may also send an `agent-ask`
+pipe, and urgent statuses may fan out an additional pipe to each registered
+foreign panel. `PreToolUse` and `PostToolUse` additionally update the in-flight
+timing record. Turn boundaries may read a bounded transcript tail;
+`UserPromptSubmit` may scan sibling records; `PermissionRequest` may read the
+rules file. Urgent cross-session fan-out runs only for `waiting`, `failed`,
+`idlewait`, and `done`.
 
 `ZJ_AGENT_HEARTBEAT=0` skips per-tool and counter events, reducing hook volume
 but making mid-turn status less precise. `ZJ_AGENT_SPOOL=0` removes the spool
@@ -184,7 +207,9 @@ subprocesses and relies on the five-second poll.
   intentionally truncated and cannot contain arbitrary commas or newlines.
 - Hook support depends on the event schema and synchronous-hook behavior of the
   host agent. Unsupported events simply produce no transition.
-- The plugin can answer only permission decisions that the host agent accepts
-  from a synchronous hook. Questions and plans still require the agent pane.
+- The plugin can answer permission decisions that the host agent accepts from a
+  synchronous hook. Generic `question` notifications can receive best-effort
+  `y`/`m` pane input; plans and CodeBuddy MCP elicitation still require the
+  agent's native pane/UI.
 - Zellij keeps loaded plugin instances in memory. Replacing a wasm file takes a
   new plugin instance, normally by starting a new session.

@@ -231,12 +231,19 @@ def task_from_transcript(data: dict[str, Any], tool: str, session_id: str) -> st
         if transcript:
             try:
                 lines = Path(transcript).read_text(encoding="utf-8", errors="replace").splitlines()[-300:]
-                records = [json.loads(line) for line in lines]
+                records = []
+                for line in lines:
+                    try:
+                        item = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(item, dict):
+                        records.append(item)
                 for kind, field in (("ai-title", "aiTitle"), ("last-prompt", "lastPrompt")):
                     values = [str(item.get(field, "")) for item in records if item.get("type") == kind]
                     if values and values[-1]:
                         return values[-1]
-            except (OSError, json.JSONDecodeError):
+            except OSError:
                 pass
     if tool == "codex" and session_id:
         root = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "sessions"
@@ -248,7 +255,11 @@ def task_from_transcript(data: dict[str, Any], tool: str, session_id: str) -> st
                         record = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    if not isinstance(record, dict):
+                        continue
                     payload = record.get("payload", {})
+                    if not isinstance(payload, dict):
+                        continue
                     if record.get("type") == "event_msg" and payload.get("type") == "user_message":
                         return str(payload.get("message", ""))
         except OSError:
@@ -426,7 +437,10 @@ def hook_output(event: str, body: dict[str, Any]) -> None:
     elif event == "UserPromptSubmit":
         print(json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": body["context"]}}, separators=(",", ":")))
     elif event == "Stop":
-        print(json.dumps({"decision": "block", "reason": body["reason"]}, separators=(",", ":")))
+        if agent_tool() == "codebuddy":
+            print(json.dumps({"continue": False, "reason": body["reason"]}, separators=(",", ":")))
+        else:
+            print(json.dumps({"decision": "block", "reason": body["reason"]}, separators=(",", ":")))
 
 
 def permission_response(event: str, data: dict[str, Any], pane_id: str, session: str, plugin: str, directory: Path) -> None:
@@ -458,6 +472,7 @@ def permission_response(event: str, data: dict[str, Any], pane_id: str, session:
         timeout = 30
     args = serialize({"pane_id": pane_id, "session": sanitize_session(session), "verdict_file": str(verdict), "tool_name": tool_name, "tool_arg": tool_arg, "timeout": str(timeout)}, True)
     send_pipe(args, plugin, name="agent-ask")
+    fanout(args, directory, session, plugin)
     for _ in range(timeout):
         try:
             if verdict.stat().st_size:
