@@ -784,15 +784,15 @@ impl State {
         changed
     }
 
-    /// Whether the selected agent is waiting for a generic question answer.
+    /// Whether the selected agent is waiting for text from the user.
     /// Permission and plan prompts have a verdict file and must be answered by
     /// the approval keys; typing into their pane would not settle the request.
     pub(crate) fn can_reply_selected(&self) -> bool {
         self.agents
             .get(self.selected)
             .map(|a| {
-                a.status == Status::Waiting
-                    && a.block == Some(Block::Question)
+                matches!(a.status, Status::Waiting | Status::IdleWait)
+                    && !matches!(a.block, Some(Block::Tool | Block::Plan))
                     && a.session_alive
                     && self.ask_for(&a.id).is_none()
             })
@@ -836,8 +836,8 @@ impl State {
         // exited while the reply was being typed.
         let sendable = self.agents.iter().any(|a| {
             a.id == id
-                && a.status == Status::Waiting
-                && a.block == Some(Block::Question)
+                && matches!(a.status, Status::Waiting | Status::IdleWait)
+                && !matches!(a.block, Some(Block::Tool | Block::Plan))
                 && a.session_alive
                 && self.ask_for(&a.id).is_none()
         });

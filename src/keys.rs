@@ -570,7 +570,7 @@ mod tests {
     fn reply_is_refused_unless_the_agent_is_blocked() {
         for (status, allowed) in [
             ("waiting", true),
-            ("idlewait", false),
+            ("idlewait", true),
             ("working", false),
             ("done", false),
             ("idle", false),
