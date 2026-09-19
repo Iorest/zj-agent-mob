@@ -202,8 +202,9 @@ For a generic `question` notification already waiting on pane stdin, use the
 panel's `y`/`n`/`m` answer actions; `a`/`r`/`A` are reserved for parked tool/plan
 permission requests. CodeBuddy `Elicitation`/`ElicitationResult` has no
 published hook answer protocol and remains in its native UI/pane. The `t` key
-opens a floating login shell using the Zellij session's `$SHELL`, then falls
-back to `zsh`, `bash`, and `sh` when available.
+opens a floating login shell from the session's `$SHELL`, falling back to
+`/bin/sh`; it spawns that shell directly so the pane frame shows the shell rather
+than the command line that started it.
 
 ### Verify an integration
 

@@ -21,6 +21,18 @@ pub(crate) struct Ask {
     pub(crate) expires_at: f64,
 }
 
+/// The shell a `t` pane opens: the session's `$SHELL` when it names one, and the
+/// POSIX fallback otherwise. A blank `SHELL` is not a shell, and neither is a
+/// missing one: zellij reports a command that does not exist inside the pane, so
+/// this never probes the filesystem it cannot see. Pure, so the choice is
+/// testable without spawning anything.
+fn login_shell(configured: Option<String>) -> String {
+    configured
+        .map(|shell| shell.trim().to_string())
+        .filter(|shell| !shell.is_empty())
+        .unwrap_or_else(|| "/bin/sh".to_string())
+}
+
 /// How the list is ordered. Urgency alone scatters one project across the
 /// screen once there are more agents than rows; grouping trades that for a
 /// header per project, urgency still deciding order within each group.
@@ -928,6 +940,17 @@ impl State {
 
     /// Opens a floating login shell in the selected row's directory, or the
     /// panel's own directory when there is no row to borrow one from.
+    ///
+    /// The shell is spawned directly, the way `spawn_agent` spawns an agent,
+    /// instead of through `sh -lc <fallback chain>`. A command pane is *named*
+    /// after the command line zellij was handed, so the wrapper printed its whole
+    /// script across the pane frame and the pane looked broken. The fallback
+    /// chain goes with it: a plugin's process environment carries the session's
+    /// `SHELL` (verified against a real session), so the choice needs neither a
+    /// `command -v` subshell nor the host's request/response env call - the
+    /// latter is a blocking round trip that panics on an ungranted permission,
+    /// which cost the keypress entirely. A shell that does not exist surfaces in
+    /// the pane as a failed command.
     pub(crate) fn spawn_shell_terminal(&mut self) -> bool {
         let cwd = self
             .agents
@@ -936,11 +959,8 @@ impl State {
             .filter(|c| !c.is_empty());
         host::open_command_pane_floating(
             CommandToRun {
-                path: "sh".into(),
-                args: vec![
-                    "-lc".into(),
-                    r#"for candidate in "${SHELL:-}" zsh bash sh; do [ -n "$candidate" ] && command -v "$candidate" >/dev/null 2>&1 && exec "$candidate" -l; done"#.into(),
-                ],
+                path: login_shell(std::env::var("SHELL").ok()).into(),
+                args: vec!["-l".into()],
                 cwd: cwd.map(Into::into),
             },
             None,
@@ -1490,6 +1510,17 @@ mod tests {
             session: "mob".into(),
             pane_id,
         }
+    }
+
+    /// The `t` pane must open a real login shell. The session's `$SHELL` wins;
+    /// a blank or absent one falls back to something POSIX that exists on any
+    /// host, rather than to nothing at all.
+    #[test]
+    fn the_terminal_key_prefers_the_sessions_shell() {
+        assert_eq!(login_shell(Some("/bin/zsh".into())), "/bin/zsh");
+        assert_eq!(login_shell(Some(" /bin/zsh ".into())), "/bin/zsh", "trimmed");
+        assert_eq!(login_shell(Some("  ".into())), "/bin/sh", "blank is not a shell");
+        assert_eq!(login_shell(None), "/bin/sh", "absent falls back");
     }
 
     #[test]

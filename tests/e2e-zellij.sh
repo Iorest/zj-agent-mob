@@ -266,5 +266,27 @@ hook '{"hook_event_name":"Stop","cwd":"/tmp/proj-cjk","session_id":"sess-c","las
 geometry_case "cjk task summary"
 
 echo
+echo "the terminal key"
+
+# `t` opens a login shell in the selected row's directory. The failure this
+# guards against is not a missing pane but an unreadable one: a command pane is
+# named after the command line zellij was handed, so the old
+# `sh -lc <fallback chain>` wrapper printed that whole script across the frame.
+# The pane must name a shell instead, and still be a login shell.
+zj action launch-or-focus-plugin --floating "$PLUGIN" >/dev/null 2>&1 || true
+sleep 2
+zj action write-chars "t" >/dev/null 2>&1 || true
+sleep 3
+terminal_layout=$(zj action dump-layout 2>/dev/null || true)
+case "$terminal_layout" in
+  *"for candidate in"*|*"-lc"*)
+    bad "the terminal key opens a shell, not a wrapper script" "$terminal_layout" ;;
+  *"sh -l"*)
+    ok "the terminal key opens a login shell" ;;
+  *)
+    bad "the terminal key opens a login shell" "no shell pane: $terminal_layout" ;;
+esac
+
+echo
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
