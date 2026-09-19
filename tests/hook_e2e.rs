@@ -654,7 +654,11 @@ fn codebuddy_uses_the_same_status_contract() {
 }
 
 #[test]
-fn codebuddy_uses_its_permission_decision_shape() {
+fn codebuddy_uses_the_shared_permission_decision_shape() {
+    // CodeBuddy's PermissionRequest hook parser only reads
+    // hookSpecificOutput.decision.behavior (verified against the bundled
+    // CLI); permissionDecision is a different, PreToolUse-only field and is
+    // silently ignored here, which made the panel's a/r keys a no-op.
     let h = Hook::new();
     let rules = h.path("approve.rules");
     fs::write(&rules, "allow Read\n").expect("write rules");
@@ -669,13 +673,13 @@ fn codebuddy_uses_its_permission_decision_shape() {
             .to_string(),
         );
     assert!(
-        r.stdout.contains("\"permissionDecision\":\"allow\""),
-        "expected CodeBuddy permissionDecision, got {:?}",
+        r.stdout.contains("\"decision\":{\"behavior\":\"allow\"}"),
+        "expected the shared decision.behavior shape, got {:?}",
         r.stdout
     );
     assert!(
-        !r.stdout.contains("behavior"),
-        "must not emit Claude's shape: {:?}",
+        !r.stdout.contains("permissionDecision"),
+        "must not emit the PreToolUse-only field: {:?}",
         r.stdout
     );
 }

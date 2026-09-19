@@ -510,11 +510,11 @@ def peer_context(directory: Path, session: str, cwd: str) -> str:
 
 def hook_output(event: str, body: dict[str, Any]) -> None:
     if event == "PermissionRequest":
+        # Claude, Codex, and CodeBuddy all parse this event as
+        # `hookSpecificOutput.decision.behavior`; `permissionDecision` is the
+        # (unrelated) PreToolUse schema and is ignored here by every agent.
         decision = body["decision"]
-        if agent_tool() == "codebuddy":
-            payload = {"hookEventName": event, "permissionDecision": decision}
-        else:
-            payload = {"hookEventName": event, "decision": {"behavior": decision}}
+        payload = {"hookEventName": event, "decision": {"behavior": decision}}
         print(json.dumps({"hookSpecificOutput": payload}, separators=(",", ":")))
     elif event == "UserPromptSubmit":
         print(json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": body["context"]}}, separators=(",", ":")))

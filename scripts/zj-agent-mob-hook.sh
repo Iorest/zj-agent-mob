@@ -486,11 +486,10 @@ if [ "$status" = ended ] && [ -n "$SESSION" ]; then
 fi
 
 permission_output() {
-  if [ "$TOOL" = codebuddy ]; then
-    printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","permissionDecision":"%s"}}\n' "$1"
-  else
-    printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"%s"}}}\n' "$1"
-  fi
+  # Claude, Codex, and CodeBuddy all parse this event as
+  # hookSpecificOutput.decision.behavior; permissionDecision is the
+  # (unrelated) PreToolUse schema and is ignored here by every agent.
+  printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"%s"}}}\n' "$1"
 }
 
 # Answering a permission prompt from the panel.
