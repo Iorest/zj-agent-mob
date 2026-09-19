@@ -26,9 +26,12 @@ impl Hint {
     }
 }
 
-/// Exactly at the 84-column ribbon budget. `/ find` was paid for by tightening
-/// three labels: the digit fast path lost its slot because every row prints its
-/// own number, so `g` is the only goto spelling that needs advertising.
+/// The default footer, at 83 of the 84-column ribbon budget. `/ find` was paid
+/// for by tightening three labels: the digit fast path lost its slot because
+/// every row prints its own number, so `g` is the only goto spelling that needs
+/// advertising. `N new` is the one entry with no room left to spare - adding a
+/// key here means trimming a label, which is the point of the budget: a footer
+/// that silently drops a segment is a key the user cannot find.
 pub(crate) const LIST_HINTS: &[Hint] = &[
     Hint::new("\u{21b5}", "jmp"),
     Hint::new("g", "go"),
@@ -36,6 +39,7 @@ pub(crate) const LIST_HINTS: &[Hint] = &[
     Hint::new("x", "kill"),
     Hint::new("d", "clr"),
     Hint::new("s", "sort"),
+    Hint::new("N", "new"),
     Hint::new("q", "hide"),
     Hint::new("t", "sh"),
 ];
@@ -182,35 +186,51 @@ mod tests {
         }
     }
 
-    /// Every unconditional list key is either in the footer or named here with
-    /// the reason it is not. `s` was missing for a release: the only place it
-    /// appeared was a header chip shown once you were *already* grouped, so the
-    /// key that gets you there advertised itself only after you had found it.
-    /// Adding a key to the list handler without a decision here fails the build.
+    /// Keys kept out of every footer on purpose, each with the surface that
+    /// advertises it instead. The guard below is the only thing between a new
+    /// binding and shipping invisible, so an excuse has to name where the key
+    /// *is* discoverable rather than stating that it is not.
+    const EXCUSED: &[(char, &str)] = &[
+        // Shift-variants: one slipped finger must not reach the whole-fleet
+        // action. Checked against the lowercase hint that is in the footer.
+        ('D', "shift-variant of d"),
+        ('G', "shift-variant of g"),
+        // Vim motions for the action the "jmp" hint already names.
+        ('j', "motion for the jump hint"),
+        ('k', "motion for the jump hint"),
+        // Only does anything on a row whose subagent fan-out is already on
+        // screen, where the branch badge and the expanded detail line name it.
+        ('o', "advertised by the badge it expands"),
+    ];
+
+    /// Every list key has to be reachable from the footer. This test used to
+    /// carry its own copy of the key list, so `N` - bound in the handler, absent
+    /// from `LIST_HINTS`, absent from that copy - passed every check while the
+    /// "new agent" action had no way to be found. It now iterates the inventory
+    /// the handler itself is tested against.
     #[test]
     fn no_list_key_is_undiscoverable() {
-        // Keys surfaced by a context-sensitive footer instead: they appear only
-        // while the selected row can actually accept them. `o` is advertised by
-        // the \u{2442} badge and detail line it expands: it only does anything
-        // on a row whose fan-out is already on screen.
-        let contextual = ["a", "r", "y", "m", "o"];
-        // Shift-variants of a key already in the footer, plus vim motions whose
-        // lowercase form is there. Discoverable via the README, and deliberately
-        // kept out so a slipped finger cannot reach the whole-fleet action.
-        // The digit fast path is excused because every row prints its own
-        // number, which advertises it better than a footer chip could.
-        let shift_or_motion = ["D", "G", "g", "j", "k"];
-
-        for key in [
-            "j", "k", "g", "G", "s", "x", "a", "r", "d", "D", "y", "m", "n", "o", "q", "/",
-        ] {
-            let in_footer = LIST_HINTS.iter().any(|h| h.key == key);
-            let excused = contextual.contains(&key) || shift_or_motion.contains(&key) || key == "n";
+        let footers = [LIST_HINTS, REPLY_HINTS, ASK_HINTS];
+        let advertised = |set: &[Hint], key: char| set.iter().any(|h| h.key == key.to_string());
+        for key in crate::keys::LIST_KEYS.iter().copied() {
+            if footers.iter().any(|set| advertised(set, key)) {
+                continue;
+            }
+            // A shift-variant is only excused when its base spelling is in the
+            // default footer: otherwise nothing names the action at all.
+            if let Some(base) = key.to_lowercase().next().filter(|base| *base != key) {
+                assert!(
+                    advertised(LIST_HINTS, base),
+                    "{base:?} is not in the default footer either, so {key:?} is unreachable"
+                );
+                continue;
+            }
             assert!(
-                in_footer || excused,
-                "list key {:?} has no discoverability surface: put it in LIST_HINTS \
-                 or add it to an exclusion list here with a reason",
-                key
+                EXCUSED
+                    .iter()
+                    .any(|(excused, reason)| *excused == key && !reason.is_empty()),
+                "list key {key:?} has no discoverability surface: put it in a footer hint, \
+                 or in EXCUSED with the surface that advertises it instead"
             );
         }
     }

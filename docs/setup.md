@@ -199,7 +199,7 @@ legacy `{"decision":"block",...}` shape. This keeps the agent working with the
 queued instruction; it is not a synthetic user message. CodeBuddy hooks do not
 provide a documented generic output field for asking the user a new question.
 For a generic `question` notification already waiting on pane stdin, use the
-panel's `y`/`m` answer actions; `a`/`r`/`A` are reserved for parked tool/plan
+panel's `y`/`n`/`m` answer actions; `a`/`r`/`A` are reserved for parked tool/plan
 permission requests. CodeBuddy `Elicitation`/`ElicitationResult` has no
 published hook answer protocol and remains in its native UI/pane. The `t` key
 opens a floating login shell using the Zellij session's `$SHELL`, then falls

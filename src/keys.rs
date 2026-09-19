@@ -7,6 +7,25 @@ use crate::state::{Find, State};
 use crate::status::Status;
 use crate::util::wrap;
 
+/// Every plain key the list screen answers with no modal state open: the
+/// inventory the handler and the footer guard are held to together.
+///
+/// It exists because the guard used to carry its own hand-written copy of this
+/// list. `N` was bound in `handle_key`, was absent from `LIST_HINTS`, and was
+/// absent from that copy too, so a panel action shipped with no way to find it
+/// and every test still passed. `the_inventory_matches_the_handler` derives the
+/// bound keys from `handle_key` itself, so this constant can now only be wrong
+/// by failing the build rather than by staying quiet. The wasm binary itself
+/// has no use for it, which is why it is test-only.
+///
+/// Motion keys (`↓`/`↑`, `Enter`) and the `1`-`9` fast path are not here: they
+/// are `BareKey` variants rather than characters, and each row prints its own
+/// number, which advertises the fast path better than a footer chip could.
+#[cfg(test)]
+pub(crate) const LIST_KEYS: &[char] = &[
+    'j', 'k', 'g', 'G', '/', 's', 'x', 'a', 'r', 'A', 'f', 'd', 'D', 'y', 'n', 'm', 'N', 't', 'o', 'q',
+];
+
 impl State {
     /// A row can be killed if its session is still alive. Foreign rows go
     /// through the `zellij` CLI, which takes a session argument where the
@@ -637,6 +656,49 @@ mod tests {
         assert!(s.handle_key(key('N')), "N is the panel action");
         assert!(s.hidden, "N opens a new agent and hides the panel");
         assert_eq!(s.agents[0].status, Status::Waiting, "N does not answer the row");
+    }
+
+    /// The inventory has to be the handler's own key set, not a second copy of
+    /// it. The footer guard downstream only knows what `LIST_KEYS` says, so a
+    /// binding missing from it is a binding nothing checks is discoverable.
+    #[test]
+    fn the_inventory_matches_the_handler() {
+        let ask: BTreeMap<String, String> = [
+            ("pane_id", "1"),
+            ("verdict_file", "/tmp/zj/v"),
+            ("tool_name", "Bash"),
+            ("tool_arg", "rm -rf node_modules"),
+            ("timeout", "30"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect();
+
+        let mut bound: Vec<char> = Vec::new();
+        for c in ('a'..='z').chain('A'..='Z').chain(std::iter::once('/')) {
+            // Two states per key: approving a parked prompt and answering a
+            // question are mutually exclusive, because an ask makes the row
+            // unrepliable. One state can therefore never cover both halves.
+            let mut plain = state_with(&[(1, "mob", "waiting"), (2, "mob", "done")]);
+            let mut parked = state_with(&[(1, "mob", "waiting"), (2, "mob", "done")]);
+            parked.handle_ask(&ask);
+            assert!(
+                parked.ask_for(&parked.agents[0].id).is_some(),
+                "the ask must land on the selected row"
+            );
+            if plain.handle_key(key(c)) || parked.handle_key(key(c)) {
+                bound.push(c);
+            }
+        }
+
+        bound.sort_unstable();
+        let mut expected = crate::keys::LIST_KEYS.to_vec();
+        expected.sort_unstable();
+        assert_eq!(
+            bound, expected,
+            "`LIST_KEYS` and the handler disagree: update the inventory next to the handler, \
+             then decide in `ribbon` how the new key is advertised"
+        );
     }
 
     /// A dead session has no pane left to type into.
