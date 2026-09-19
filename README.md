@@ -37,7 +37,7 @@ supported, compatible entry point.
 | Zellij 0.44+ | Plugin API (`LaunchOrFocusPlugin`, pipes, `RunCommandResult`) |
 | Python 3.12+ | Recommended Python hook runtime |
 | POSIX shell + `jq` | Optional shell hook runtime |
-| `zellij` on `PATH` | The hook uses `zellij pipe` when the agent runs in Zellij |
+| `zellij` on `PATH` | The hook uses `zellij pipe` when the agent runs in Zellij, and the plugin shells out to `zellij --session <name> action ...` for replies, interrupts, and summary publishing |
 | Rust + `wasm32-wasip1` target | Only to build from source; releases contain the wasm |
 
 ## Quick start

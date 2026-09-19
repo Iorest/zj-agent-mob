@@ -4,7 +4,7 @@
 #[cfg(target_family = "wasm")]
 pub(crate) use zellij_tile::shim::{
     close_self, close_terminal_pane, focus_terminal_pane, hide_self, open_command_pane_floating, run_command,
-    send_sigint_to_pane_id, set_timeout, show_self, switch_session_with_focus, write_chars_to_pane_id,
+    send_sigint_to_pane_id, set_timeout, show_self, switch_session_with_focus,
 };
 
 #[cfg(target_family = "wasm")]
@@ -175,7 +175,6 @@ mod stub {
     pub(crate) fn notify(_notifier: &str, _title: &str, _body: &str, _sound: bool) {}
     pub(crate) fn session_action(_session: &str, _args: &[&str], _kind: &str) {}
     pub(crate) fn publish_summary(_summary: &str, _path: &str, _kv: &str) {}
-    pub(crate) fn write_chars_to_pane_id(_chars: &str, _id: PaneId) {}
     pub(crate) fn open_command_pane_floating(
         _cmd: CommandToRun,
         _coords: Option<FloatingPaneCoordinates>,

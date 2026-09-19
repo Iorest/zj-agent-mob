@@ -153,10 +153,13 @@ A timed-out hook prints no decision and returns control to the agent's own
 prompt. This is safer than leaving a turn blocked. The panel only offers
 <kbd>a</kbd>/<kbd>r</kbd>/<kbd>A</kbd> while the verdict is still live; <kbd>y</kbd>
 and <kbd>m</kbd> are reserved for a generic `question` notification and never
-write into a parked permission or plan prompt. The question reply is best-effort
-pane input for an agent already waiting on stdin, not a generic hook answer
-protocol. CodeBuddy `Elicitation`/`ElicitationResult` has no documented hook
-answer schema, so those interactions remain in CodeBuddy's native UI/pane.
+write into a parked permission or plan prompt. The question reply is typed into
+the agent's pane through `zellij --session <name> action write-chars`, the same
+command for a row in the panel's session and one in another: both transports go
+through `RunCommands`, so there is no local-only path that can be silently
+denied. Replies are still pane input, not a generic hook answer protocol.
+CodeBuddy `Elicitation`/`ElicitationResult` has no documented hook answer
+schema, so those interactions remain in CodeBuddy's native UI/pane.
 
 ## Follow-ups and peer context
 

@@ -852,19 +852,35 @@ impl State {
             self.reply = None;
             return false;
         }
-        let foreign = !self.session_name.is_empty() && id.session != self.session_name;
-        // Same empty-session guard as `interrupt_pane`/`close_pane`: a row
-        // born with `id.session == ""` from the startup race resolves to no
-        // real session either, and must fall through to the local shim.
-        let session = self.real_session(&id.session);
-        match foreign && !session.is_empty() {
-            true => host::session_action(
-                &session,
-                &["write-chars", "--pane-id", &id.pane_id.to_string(), text],
-                "reply",
-            ),
-            false => host::write_chars_to_pane_id(text, PaneId::Terminal(id.pane_id)),
+        // Replies always leave through `zellij --session <name> action
+        // write-chars` (RunCommands), never through the host
+        // `write_chars_to_pane_id`. That host call is gated on the
+        // `WriteToStdin` permission this plugin does not request: the text is
+        // dropped with a server-side "permission denied" log while the panel
+        // still reports a reply, so a row in the panel's own session could
+        // never be answered. One transport for local and foreign rows also
+        // removes the local/foreign split that hid this.
+        let mut session = self.real_session(&id.session);
+        if session.is_empty() {
+            // Same startup race as `interrupt_pane`/`close_pane`: a row born
+            // with `id.session == ""` resolves to no real session either. Such
+            // a row is, in the common case, a local pane misclassified as
+            // foreign, so the panel's own session is the right target rather
+            // than no target at all.
+            session = self.session_name.clone();
         }
+        if session.is_empty() {
+            // The panel does not know its own session yet either, so there is
+            // nothing to address. Refuse instead of typing into whichever
+            // session the CLI would resolve on its own.
+            self.reply = None;
+            return false;
+        }
+        host::session_action(
+            &session,
+            &["write-chars", "--pane-id", &id.pane_id.to_string(), text],
+            "reply",
+        );
         self.reply = None;
         self.asks.retain(|a| a.id != id);
         let now = self.now;
@@ -3083,10 +3099,12 @@ mod cross_session_tests {
     /// `switch_session_with_focus`, so an empty resolved name there does not
     /// panic the session - but the CLI call still fails outright, so
     /// `x`/`a`/`r`/`y`/`m` on this exact row would look like a dead keypress
-    /// instead. All three must fall back to the session-local shim, the same
-    /// as `focus_selected` falls back to `focus_terminal_pane`.
+    /// instead. `interrupt_pane`/`close_pane` fall back to the session-local
+    /// shim - the same way `focus_selected` falls back to
+    /// `focus_terminal_pane` - and `send_reply`, which has no shim left, falls
+    /// back to the panel's own session name.
     #[test]
-    fn a_race_born_empty_session_falls_back_to_the_local_shim_everywhere() {
+    fn a_race_born_empty_session_falls_back_to_the_local_target() {
         let mut s = State {
             permissions_granted: true,
             ..Default::default()
@@ -3115,9 +3133,9 @@ mod cross_session_tests {
         s.interrupt_pane(&id, true);
         s.close_pane(&id, true);
 
-        // `send_reply` takes the same `foreign` shape internally; the local
-        // shim must still be the one that answers this row.
-        assert!(s.send_reply("hi"), "the local shim still answers the row");
+        // `send_reply` always takes the CLI route, so its fallback is the
+        // panel's own session name rather than a shim.
+        assert!(s.send_reply("hi"), "the panel's own session answers the row");
     }
 
     /// Nothing is left to signal once the session is gone, in either direction.

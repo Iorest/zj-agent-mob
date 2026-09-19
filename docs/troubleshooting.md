@@ -185,6 +185,22 @@ A matching `allow <tool> [arg-prefix]` line in
 `~/.config/zj-agent-mob/approve.rules` answers immediately. Rules are
 allow-only; the panel never writes an automatic deny.
 
+## Reply does nothing
+
+<kbd>y</kbd>/<kbd>m</kbd> type the text into the agent's pane with
+`zellij --session <name> action write-chars`, so check:
+
+- `zellij` is on `PATH`: the plugin shells out to it, and a server started
+  without it there cannot deliver a reply;
+- the row is `waiting`/`idlewait` and not blocked on a tool or plan prompt -
+  replies are offered only where the agent is waiting on stdin; and
+- the pane still runs the agent, since a reply types into whatever holds that
+  pane now.
+
+The row turns `working` with `replied from panel` once the command is
+dispatched; the panel cannot see whether the program in the pane accepted the
+text.
+
 ## The panel is cramped
 
 The project column is dropped below 50 columns. The detail line needs about 60
