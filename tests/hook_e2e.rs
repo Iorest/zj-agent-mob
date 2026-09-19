@@ -219,6 +219,12 @@ impl Hook {
             // Keep the real spool and real HOME out of every run by default.
             .env("HOME", self.sandbox.path("home"))
             .env("ZJ_AGENT_SPOOL_DIR", self.sandbox.path("spool"))
+            // Every case here asserts on a pipe, so it needs the hook's budget
+            // to outlast process startup on a loaded machine. The default is
+            // half a second - deliberately short, because a hook must never
+            // block an agent - and a busy CI box blows through it, which is a
+            // dropped update rather than a bug in the event being tested.
+            .env("ZJ_AGENT_PIPE_TIMEOUT", "10")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -273,6 +279,12 @@ impl Hook {
             .env("ZJ_AGENT_FANOUT", "0")
             .env("HOME", self.sandbox.path("home"))
             .env("ZJ_AGENT_SPOOL_DIR", self.sandbox.path("spool"))
+            // Every case here asserts on a pipe, so it needs the hook's budget
+            // to outlast process startup on a loaded machine. The default is
+            // half a second - deliberately short, because a hook must never
+            // block an agent - and a busy CI box blows through it, which is a
+            // dropped update rather than a bug in the event being tested.
+            .env("ZJ_AGENT_PIPE_TIMEOUT", "10")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -381,6 +393,14 @@ fn run(json: &str) -> Run {
     Hook::new().run(json)
 }
 
+/// Runs without approval, for cases that assert what an event *reports* rather
+/// than what the panel answers. Approval is on by default, so a
+/// `PermissionRequest` otherwise waits out its 30-second verdict poll - and that
+/// verdict file sits in a TMPDIR shared with every other test in this binary.
+fn run_now(json: &str) -> Run {
+    Hook::new().env("ZJ_AGENT_APPROVE", "0").run(json)
+}
+
 fn ev(name: &str) -> String {
     serde_json::json!({ "hook_event_name": name }).to_string()
 }
@@ -405,7 +425,14 @@ fn events_map_to_statuses() {
         ("PostCompact", "working"),
     ];
     for (event, want) in cases {
-        let r = run(&ev(event));
+        // Approval off: nothing is parked, so `PermissionRequest` must map to its
+        // status without sitting out the verdict timeout. Left on, this test
+        // spends 30s here and a concurrent test's verdict file in the shared
+        // TMPDIR can answer the prompt instead.
+        let r = Hook::new()
+            .env("ZJ_AGENT_TOOL", "claude")
+            .env("ZJ_AGENT_APPROVE", "0")
+            .run(&ev(event));
         assert_eq!(r.field("status"), want, "{event} should map to {want}");
     }
 }
@@ -796,6 +823,81 @@ fn python_and_shell_hooks_match_the_core_codebuddy_contract() {
             assert_eq!(python.field(key), expected, "Python field {key}, event {index}: {json}");
             assert_eq!(shell.field(key), expected, "Shell field {key}, event {index}: {json}");
         }
+    }
+}
+
+/// Both entry points must ignore the same informational notifications. Left
+/// unfiltered they report `waiting`, which is a false "needs you" on the row and
+/// enables the panel's y/n reply keys on a pane that is not reading stdin.
+#[test]
+fn both_hooks_ignore_informational_notifications() {
+    for kind in ["auth_success", "elicitation_dialog"] {
+        let json = serde_json::json!({
+            "hook_event_name": "Notification",
+            "session_id": "cb-session",
+            "cwd": "/tmp/project",
+            "notification_type": kind,
+            "message": "signed in",
+        })
+        .to_string();
+        let python = Hook::new().env("ZJ_AGENT_TOOL", "codebuddy").run(&json);
+        let shell = Hook::new().exec_shell(&json, &[]);
+        assert!(python.silent(), "Python reported {kind}: {:?}", python.pipes);
+        assert!(shell.silent(), "Shell reported {kind}: {:?}", shell.pipes);
+    }
+}
+
+/// Claude and Codex detach these hooks with `"async": true` in their settings;
+/// CodeBuddy only detaches a hook that prints the ack itself, so both entry
+/// points have to print it - and neither may print it on a decision event, where
+/// detaching would drop the output the agent is waiting on.
+#[test]
+fn both_hooks_ack_codebuddy_reporting_events_but_never_decisions() {
+    let reporting = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "session_id": "cb-session",
+        "cwd": "/tmp/project",
+        "toolCall": {"name": "shell", "args": {"command": "printf ok"}},
+    })
+    .to_string();
+    let ack = r#"{"async":true,"asyncTimeout":10000}"#;
+
+    let python = Hook::new().env("ZJ_AGENT_TOOL", "codebuddy").run(&reporting);
+    let shell = Hook::new().exec_shell(&reporting, &[]);
+    assert!(python.stdout.contains(ack), "Python ack missing: {:?}", python.stdout);
+    assert!(shell.stdout.contains(ack), "Shell ack missing: {:?}", shell.stdout);
+    assert!(python.status_pipe().is_some(), "the ack must not replace the report");
+    assert!(shell.status_pipe().is_some(), "the ack must not replace the report");
+
+    // Claude already detaches from its settings file, so an ack here would be a
+    // second, redundant mechanism the host would have to ignore.
+    let claude = Hook::new().env("ZJ_AGENT_TOOL", "claude").run(&reporting);
+    assert!(
+        !claude.stdout.contains("async"),
+        "Claude got an ack: {:?}",
+        claude.stdout
+    );
+
+    for decision in ["PermissionRequest", "Stop", "UserPromptSubmit"] {
+        let json = serde_json::json!({
+            "hook_event_name": decision,
+            "session_id": "cb-session",
+            "cwd": "/tmp/project",
+            "prompt": "carry on",
+            "toolCall": {"name": "shell", "args": {"command": "printf ok"}},
+            "last_assistant_message": "done",
+        })
+        .to_string();
+        // No panel runs in this test, so an unanswerable prompt must not wait.
+        let python = Hook::new()
+            .env("ZJ_AGENT_TOOL", "codebuddy")
+            .env("ZJ_AGENT_APPROVE", "0")
+            .run(&json);
+        assert!(
+            !python.stdout.contains("async"),
+            "{decision} must stay synchronous: {:?}",
+            python.stdout
+        );
     }
 }
 
@@ -1652,7 +1754,10 @@ fn a_tool_permission_request_reports_a_tool_block() {
         "tool_input": {"command": "rm -rf node_modules"},
     })
     .to_string();
-    assert_eq!(run(&json).field("block"), "tool");
+    // Not asserting the verdict, so do not sit out the poll for one: an unset
+    // timeout costs the suite 30s here, and the verdict file lives in a TMPDIR
+    // shared with every other test.
+    assert_eq!(run_now(&json).field("block"), "tool");
 }
 
 /// A plan is not a yes/no: it has to be read, so it must not look like one.
@@ -1664,7 +1769,7 @@ fn a_plan_approval_reports_a_plan_block() {
         "tool_input": {"plan": "step one"},
     })
     .to_string();
-    let r = run(&json);
+    let r = run_now(&json);
     assert_eq!(r.field("block"), "plan");
     assert_eq!(r.field("status"), "waiting");
 }

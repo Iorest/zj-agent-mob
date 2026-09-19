@@ -164,9 +164,14 @@ case "$event" in
   UserPromptSubmit)  status=working ;;
   Notification)
     # idle_prompt means abandoned, not blocked; only a real prompt is `waiting`.
+    # `auth_success` fires on every sign-in and `elicitation_dialog` is MCP input
+    # the agent collects in its own pane. Neither is a request the panel can
+    # answer, and reporting them marked an idle agent as blocked on the user and
+    # offered the y/n reply keys where nothing was reading stdin.
     case "$notif_type" in
-      idle_prompt|agent_needs_input) status=idlewait ;;
-      *)                             status=waiting ;;
+      auth_success|elicitation_dialog) exit 0 ;;
+      idle_prompt|agent_needs_input)   status=idlewait ;;
+      *)                               status=waiting ;;
     esac ;;
   PermissionRequest) status=waiting ;;
   PreToolUse|PostToolUse)
@@ -184,6 +189,21 @@ case "$event" in
     status='' ;;
   SessionEnd)        status=ended ;;
   *) exit 0 ;;
+esac
+
+# CodeBuddy has no `async` config field: its hook executor detaches a hook only
+# when the hook prints `{"async": true}` as the first JSON object on stdout, and
+# it reads only the first object to arrive. Claude and Codex get the same effect
+# from `"async": true` in their settings, so without this every CodeBuddy
+# reporting event blocks the agent for the hook's whole runtime and only
+# `timeout` bounds the damage. Decision events are exempt: detaching one drops
+# the verdict, the queued follow-up or the injected context it exists to deliver.
+case "$event" in
+  PermissionRequest|Stop|UserPromptSubmit) : ;;
+  *)
+    if [ "$TOOL" = codebuddy ]; then
+      printf '{"async":true,"asyncTimeout":10000}\n'
+    fi ;;
 esac
 
 # Task summary: only re-extract on turn boundaries. Transcripts reach tens of MB,

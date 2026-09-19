@@ -298,6 +298,7 @@ plugin block:
 | `ZJ_AGENT_SPOOL_DIR` | `$TMPDIR/zj-agent-mob-<uid>/status` | Override the status directory |
 | `ZJ_AGENT_FANOUT` | `1` | Set `0` to disable urgent cross-session fan-out |
 | `ZJ_AGENT_PLUGIN` | `file:~/.config/zellij/plugins/zj-agent-mob.wasm` | Override plugin path |
+| `ZJ_AGENT_PIPE_TIMEOUT` | `0.5` | Seconds to give one `zellij pipe` before dropping that update (Python hook only) |
 | `ZJ_AGENT_DEBUG` | `0` | Set `1` to log hook events |
 
 The Python hook also accepts usage and context fields when present. The current

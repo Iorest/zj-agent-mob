@@ -454,6 +454,21 @@ def git_identity(cwd: str, directory: Path, session: str, pane_id: str) -> tuple
         return "", "", ""
 
 
+def pipe_timeout() -> float:
+    """Seconds to give one `zellij pipe` before abandoning it.
+
+    A hook must never block an agent, so a pipe that outlives this budget is
+    killed and its update dropped; the next event, or the panel's own poll,
+    repairs the row. The default assumes `zellij` answers in milliseconds, which
+    is what it does on an idle machine - a loaded one can take hundreds, so the
+    budget is raisable rather than fixed.
+    """
+    try:
+        return max(0.01, float(os.environ.get("ZJ_AGENT_PIPE_TIMEOUT", "")))
+    except ValueError:
+        return PIPE_TIMEOUT_SECONDS
+
+
 def send_pipe(
     args: str,
     plugin: str,
@@ -477,7 +492,8 @@ def send_pipe(
     if include_plugin:
         command.extend(["--plugin", plugin])
     command.extend(["--args", args])
-    timeout = PIPE_TIMEOUT_SECONDS if deadline is None else min(PIPE_TIMEOUT_SECONDS, max(0.01, deadline - time.monotonic()))
+    budget = pipe_timeout()
+    timeout = budget if deadline is None else min(budget, max(0.01, deadline - time.monotonic()))
     try:
         subprocess.run(command, check=False, capture_output=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError):
