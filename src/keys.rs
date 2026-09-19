@@ -46,11 +46,23 @@ impl State {
             }
         }
 
-        if foreign {
+        // The name Zellij knows it by, not the sanitized filename key.
+        let session = self.real_session(&id.session);
+        // `id_from` falls back to `self.session_name` when a hook payload
+        // carries no `session=` field, on the assumption that a status event
+        // for an untagged pane must be local. That assumption breaks if the
+        // very first report for a pane lands before this plugin's own
+        // `session_name` has been learned from the first `SessionUpdate`:
+        // the row is created with `session == ""` and keeps that identity
+        // forever, since `AgentId` is the key later reports are matched by.
+        // From then on the row looks foreign, and `real_session("")` finds
+        // no match either, so it resolves right back to `""`. Zellij treats
+        // an empty/unspecified target as "the current session" and refuses
+        // to attach to it with a hard `panic!` that takes the whole session
+        // down - so an empty resolved name must never reach that call.
+        if foreign && !session.is_empty() {
             // A dead session has no pane to land on; attaching resurrects it.
             let target = if session_alive { Some((id.pane_id, false)) } else { None };
-            // The name Zellij knows it by, not the sanitized filename key.
-            let session = self.real_session(&id.session);
             host::switch_session_with_focus(&session, tab.filter(|_| session_alive), target);
         } else {
             host::focus_terminal_pane(id.pane_id, true, false);
@@ -955,6 +967,48 @@ mod tests {
         s.handle_key(KeyWithModifier::new(BareKey::Enter));
         assert_eq!(s.selected, 12, "g99 with 26 rows must not move the cursor");
         assert_eq!(s.jump_buf, None);
+    }
+
+    /// If a hook payload for a pane's very first report is missing
+    /// `session=`, `id_from` falls back to `self.session_name` on the
+    /// assumption an untagged report must be local. That assumption breaks
+    /// when this plugin has not learned its own session yet (no
+    /// `SessionUpdate` processed): the row is created with `session == ""`
+    /// and keeps that identity forever, since `AgentId` is the key later
+    /// reports are matched by. Once `self.session_name` is later learned,
+    /// this row is indistinguishable from a real foreign row by name alone.
+    #[test]
+    fn a_report_with_no_session_field_before_the_session_name_is_known_bakes_in_an_empty_session() {
+        let mut s = State {
+            permissions_granted: true,
+            ..Default::default()
+        };
+        s.handle_status(&args_map(&[("pane_id", "7"), ("status", "idle")]));
+        assert_eq!(
+            s.agents[0].id.session, "",
+            "the untagged report has no session to fall back to yet"
+        );
+
+        // A later `SessionUpdate` teaches the panel its real session.
+        s.session_name = "fascinating-clarinet".into();
+
+        // `focus_selected`'s switch branch resolves this row to an empty
+        // session too - `real_session` has nothing to map `""` to - and
+        // Zellij treats an empty/unspecified target as "the current
+        // session", refusing to attach to it with a hard `panic!` that would
+        // take the whole session down. The empty resolved name is exactly
+        // what the guard in `focus_selected` must catch before ever reaching
+        // `switch_session_with_focus`.
+        let session = s.real_session(&s.agents[0].id.session);
+        assert_eq!(session, "", "an untagged row resolves to no real session name");
+
+        // Selecting and focusing this exact row must not reach the
+        // switch-session branch (there is no call recorder to assert that
+        // directly off-wasm, but the guard above is the condition
+        // `focus_selected` checks before choosing it).
+        s.selected = 0;
+        s.handle_key(KeyWithModifier::new(BareKey::Enter));
+        assert!(s.hidden, "focusing still completes and hides the panel");
     }
 }
 

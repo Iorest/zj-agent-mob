@@ -744,9 +744,18 @@ impl State {
     /// is session-local, so a foreign pane is reached through the `zellij`
     /// binary, which does take a session.
     pub(crate) fn interrupt_pane(&self, id: &AgentId, foreign: bool) {
-        match foreign {
+        // See `focus_selected` for why an empty resolved name can happen: a
+        // pane's first report raced ahead of `self.session_name` being known
+        // and got `id.session == ""` baked in forever. `zellij --session ""
+        // action` cannot panic this session the way `switch_session_with_focus`
+        // can, but it still fails outright, so the keypress would silently do
+        // nothing. Since that row is, in the overwhelmingly common case, a
+        // local pane misclassified as foreign, the local shim is not just the
+        // safe fallback here - it is the correct one.
+        let session = self.real_session(&id.session);
+        match foreign && !session.is_empty() {
             true => host::session_action(
-                &self.real_session(&id.session),
+                &session,
                 &["write", &SIGINT_BYTE.to_string(), "--pane-id", &id.pane_id.to_string()],
                 "kill",
             ),
@@ -755,12 +764,10 @@ impl State {
     }
 
     pub(crate) fn close_pane(&self, id: &AgentId, foreign: bool) {
-        match foreign {
-            true => host::session_action(
-                &self.real_session(&id.session),
-                &["close-pane", "--pane-id", &id.pane_id.to_string()],
-                "kill",
-            ),
+        // Same empty-session guard as `interrupt_pane` above.
+        let session = self.real_session(&id.session);
+        match foreign && !session.is_empty() {
+            true => host::session_action(&session, &["close-pane", "--pane-id", &id.pane_id.to_string()], "kill"),
             false => host::close_terminal_pane(id.pane_id),
         }
     }
@@ -846,9 +853,13 @@ impl State {
             return false;
         }
         let foreign = !self.session_name.is_empty() && id.session != self.session_name;
-        match foreign {
+        // Same empty-session guard as `interrupt_pane`/`close_pane`: a row
+        // born with `id.session == ""` from the startup race resolves to no
+        // real session either, and must fall through to the local shim.
+        let session = self.real_session(&id.session);
+        match foreign && !session.is_empty() {
             true => host::session_action(
-                &self.real_session(&id.session),
+                &session,
                 &["write-chars", "--pane-id", &id.pane_id.to_string(), text],
                 "reply",
             ),
@@ -3062,6 +3073,51 @@ mod cross_session_tests {
         s.selected = s.agents.iter().position(|a| a.session() == "mob").unwrap();
         assert!(s.can_kill_selected());
         assert!(!s.selected_is_foreign(), "a home row uses the direct shim");
+    }
+
+    /// The same startup race documented on `focus_selected`'s regression test
+    /// (a pane's first report arriving before `self.session_name` is known
+    /// bakes `id.session == ""` into the row forever) reaches `interrupt_pane`,
+    /// `close_pane`, and `send_reply` too. They route a foreign row through
+    /// `zellij --session <name> action ...` rather than the in-process
+    /// `switch_session_with_focus`, so an empty resolved name there does not
+    /// panic the session - but the CLI call still fails outright, so
+    /// `x`/`a`/`r`/`y`/`m` on this exact row would look like a dead keypress
+    /// instead. All three must fall back to the session-local shim, the same
+    /// as `focus_selected` falls back to `focus_terminal_pane`.
+    #[test]
+    fn a_race_born_empty_session_falls_back_to_the_local_shim_everywhere() {
+        let mut s = State {
+            permissions_granted: true,
+            ..Default::default()
+        };
+        s.handle_status(&args(&[("pane_id", "7"), ("status", "waiting")]));
+        assert_eq!(
+            s.agents[0].id.session, "",
+            "no session tag yet, same race as focus_selected"
+        );
+
+        // A later `SessionUpdate` teaches the panel its real session.
+        s.session_name = "fascinating-clarinet".into();
+        s.selected = 0;
+        let id = s.agents[0].id.clone();
+
+        assert!(s.selected_is_foreign(), "misclassified as foreign by name alone");
+        assert_eq!(
+            s.real_session(&id.session),
+            "",
+            "and resolves to no real session either"
+        );
+
+        // Neither call may reach the CLI route with an empty session name;
+        // there is no call recorder to assert that directly off-wasm, but
+        // both must return without touching a session that does not exist.
+        s.interrupt_pane(&id, true);
+        s.close_pane(&id, true);
+
+        // `send_reply` takes the same `foreign` shape internally; the local
+        // shim must still be the one that answers this row.
+        assert!(s.send_reply("hi"), "the local shim still answers the row");
     }
 
     /// Nothing is left to signal once the session is gone, in either direction.
