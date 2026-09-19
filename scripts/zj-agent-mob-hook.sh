@@ -240,6 +240,22 @@ case "$event" in
     ;;
 esac
 
+# Every `zellij` call goes through this, on the same budget the Python hook uses:
+# an agent turn must never be held up by a panel, or a server, that is not
+# answering. POSIX sh has no `timeout`, so one is used when the host provides it
+# (coreutils has it on both macOS and Linux) and the call is left unbounded when
+# it does not - which is the behaviour this hook had before the budget existed.
+PIPE_TIMEOUT="${ZJ_AGENT_PIPE_TIMEOUT:-0.5}"
+TIMEOUT_BIN=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+
+zellij_bounded() {
+  if [ -n "$TIMEOUT_BIN" ]; then
+    "$TIMEOUT_BIN" "$PIPE_TIMEOUT" zellij "$@"
+  else
+    zellij "$@"
+  fi
+}
+
 # --args is comma-separated key=value. Most display fields are intentionally
 # capped, but cwd is an executable path and uses a separate URI encoding below.
 sanitize() {
@@ -412,7 +428,7 @@ fi
 
 ARGS="pane_id=$ZELLIJ_PANE_ID,session=$SESSION,tool=$tool_field,status=$status,session_id=$session_id_field,cwd_encoding=uri-v1,cwd=$cwd_field,task=$task,detail=$detail,block=$block,perm_mode=$perm_mode,model=$model,agent_type=$agent_type,agent_id=$agent_id,repo=$repo,wt=$wt,branch=$branch,tool_secs=$tool_secs,subagent_delta=$subagent_delta,task_delta=$task_delta,task_done_delta=$task_done_delta"
 
-zellij pipe --name agent-status --plugin "$PLUGIN" --args "$ARGS" >/dev/null 2>&1 || true
+zellij_bounded pipe --name agent-status --plugin "$PLUGIN" --args "$ARGS" >/dev/null 2>&1 || true
 
 # The pipe above reaches only this session's plugin. A panel in another session
 # otherwise waits for its next poll to notice, which is too slow for the states
@@ -432,7 +448,7 @@ case "$status" in
         [ "$key" = "$SESSION" ] && continue
         target=$(head -n 1 "$beacon" 2>/dev/null)
         [ -n "$target" ] || target=$key
-        zellij --session "$target" pipe --name agent-status \
+        zellij_bounded --session "$target" pipe --name agent-status \
           --plugin "$PLUGIN" --args "$ARGS" >/dev/null 2>&1 || true
       done
     fi ;;
@@ -558,14 +574,14 @@ if [ "$event" = PermissionRequest ] && [ "${ZJ_AGENT_APPROVE:-1}" = "1" ]; then
   ask_tool_name=$(sanitize "$tool_name")
   ask_tool_arg=$(sanitize "$tool_arg")
   ask_args="pane_id=$ZELLIJ_PANE_ID,session=$SESSION,verdict_file=$vfile,tool_name=$ask_tool_name,tool_arg=$ask_tool_arg,timeout=$approve_timeout"
-  zellij pipe --name agent-ask --plugin "$PLUGIN" --args "$ask_args" >/dev/null 2>&1 || true
+  zellij_bounded pipe --name agent-ask --plugin "$PLUGIN" --args "$ask_args" >/dev/null 2>&1 || true
   if [ "${ZJ_AGENT_FANOUT:-1}" != "0" ] && [ -n "$SESSION" ]; then
     for beacon in "$(spool_dir)"/panel.*; do
       [ -f "$beacon" ] || continue
       target=$(head -n 1 "$beacon" 2>/dev/null || true)
       [ -n "$target" ] || target=${beacon##*/panel.}
       [ "$target" = "$SESSION" ] && continue
-      zellij --session "$target" pipe --name agent-ask --plugin "$PLUGIN" \
+      zellij_bounded --session "$target" pipe --name agent-ask --plugin "$PLUGIN" \
         --args "$ask_args" >/dev/null 2>&1 || true
     done
   fi
