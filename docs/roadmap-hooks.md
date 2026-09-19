@@ -55,7 +55,7 @@ stdout. Everything below is about the other direction.
 | `statusMessage` on hook config | shown in the agent's UI while a hook runs | unused |
 | `type: "mcp_tool"` hooks | call an MCP tool instead of a command | unused |
 | Project-level discovery (`<repo>/.codex/hooks.json`) | per-repo hooks | user-level only |
-| Async output surfacing | async hook output lands at next safe point | we discard all output on async paths |
+| Async output surfacing | async hook output lands at next safe point | we discard all output on async paths, but the CodeBuddy adapter *emits* `{"async": true}` itself to detach its reporting hooks; `PermissionRequest`, `Stop`, and `UserPromptSubmit` stay synchronous |
 
 ## Proposals
 

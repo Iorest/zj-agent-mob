@@ -74,6 +74,12 @@ The event-to-status mapping is intentionally small:
 counter deltas instead of replacing the parent pane's status. Unknown events
 are ignored.
 
+Two notification kinds are ignored outright, because neither is a request the
+panel can answer: `auth_success` is informational, and `elicitation_dialog` is
+MCP input that CodeBuddy collects in its own pane. Writing them as `waiting`
+with a `question` block marked an idle agent as blocked on you *and* offered the
+<kbd>y</kbd>/<kbd>n</kbd> reply keys on a pane that was not reading stdin.
+
 ## Cross-session status
 
 A pipe reaches the plugin in the agent's own session. For panels in other
@@ -200,6 +206,15 @@ rules file. Urgent cross-session fan-out runs only for `waiting`, `failed`,
 but making mid-turn status less precise. `ZJ_AGENT_SPOOL=0` removes the spool
 write and cross-session visibility. `ZJ_AGENT_FANOUT=0` removes urgent
 subprocesses and relies on the five-second poll.
+
+Claude and Codex detach the reporting hooks with `"async": true` in their
+settings. CodeBuddy has no such field - its executor only detaches a hook that
+prints `{"async": true}` itself, and only when that is the first JSON object to
+reach stdout - so the hook writes that line before doing any work whenever
+`ZJ_AGENT_TOOL=codebuddy`, for every event whose stdout nobody reads.
+`PermissionRequest`, `Stop`, and `UserPromptSubmit` are exempt: detaching one of
+those would drop the verdict, the queued follow-up, or the injected context the
+event exists to deliver.
 
 ## Limits
 

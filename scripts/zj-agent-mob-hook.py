@@ -38,6 +38,23 @@ EVENT_STATUS = {
     "PostCompact": "working",
     "SessionEnd": "ended",
 }
+# Notification kinds that carry no request for the user, even though they
+# arrive on the same event. CodeBuddy sends `auth_success` on every sign-in and
+# `elicitation_dialog` when an MCP server wants input it answers in its own UI.
+# Treating either as a question wrote `status=waiting, block=question` over a
+# row that was idle or working, which is a false "needs you" *and* put the
+# footer's `y`/`n` reply keys on a pane that was not reading stdin.
+IGNORED_NOTIFICATION_KINDS = {"auth_success", "elicitation_dialog"}
+# CodeBuddy has no `async` config field: its hook executor detaches a hook only
+# when the hook itself prints `{"async": true}` as the first JSON object on
+# stdout (`tryAsyncProbe` in the bundled CLI). Claude and Codex get the same
+# effect from `"async": true` in their settings, so without this every
+# CodeBuddy tool call blocked the agent for the hook's whole runtime.
+ASYNC_ACK_TIMEOUT_MS = 10_000
+# Events whose stdout *is* the result the agent waits on: a permission verdict,
+# injected context, or a queued follow-up. Detaching any of them drops exactly
+# the output the event exists to deliver.
+DECISION_EVENTS = frozenset({"PermissionRequest", "Stop", "UserPromptSubmit"})
 COUNTER_EVENTS = {
     "SubagentStart": {"subagent_delta": "1"},
     "SubagentStop": {"subagent_delta": "-1"},
@@ -264,8 +281,25 @@ def notification_kind(data: dict[str, Any]) -> str:
 def event_status(event: str, data: dict[str, Any]) -> str | None:
     if event == "Notification":
         kind = notification_kind(data)
+        # `None` means "not a transition": the row keeps whatever it already
+        # reported instead of being overwritten by an informational ping.
+        if kind in IGNORED_NOTIFICATION_KINDS:
+            return None
         return "idlewait" if kind in {"idle_prompt", "agent_needs_input"} else "waiting"
     return EVENT_STATUS.get(event)
+
+
+def async_ack(event: str) -> None:
+    """Let CodeBuddy stop waiting on a hook whose result nobody needs.
+
+    Printed before any work, because the probe only reads the first JSON object
+    to reach stdout. A decision event must not be detached, so it prints
+    nothing here and the agent keeps blocking on it as intended.
+    """
+    if event in DECISION_EVENTS or agent_tool() != "codebuddy":
+        return
+    sys.stdout.write(json.dumps({"async": True, "asyncTimeout": ASYNC_ACK_TIMEOUT_MS}, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
 
 
 def tool_argument(arguments: dict[str, Any]) -> str:
@@ -593,6 +627,7 @@ def process_event(event: str, data: dict[str, Any], pane_id: str, session: str) 
     # subagent and task counters entirely.
     if status is None and not counters:
         return
+    async_ack(event)
     plugin = os.environ.get("ZJ_AGENT_PLUGIN", f"file:{Path.home()}/.config/zellij/plugins/zj-agent-mob.wasm")
     fields = status_fields(event, data, status or "", pane_id, session)
     fields.update(counters)
