@@ -423,9 +423,13 @@ impl State {
                 };
                 true
             }
+            // `y`/`n` answer a generic question with one keystroke; `m` composes
+            // anything longer. Spawning an agent moved to `N` (shift) so a
+            // slipped finger while answering cannot open a new pane.
             BareKey::Char('y') => self.send_reply("y\n"),
+            BareKey::Char('n') => self.send_reply("n\n"),
             BareKey::Char('m') => self.begin_reply(),
-            BareKey::Char('n') => self.spawn_agent(),
+            BareKey::Char('N') => self.spawn_agent(),
             BareKey::Char('t') => self.spawn_shell_terminal(),
             BareKey::Char('q') | BareKey::Esc => {
                 self.kill_armed = None;
@@ -596,6 +600,10 @@ mod tests {
             // makes it no longer repliable.
             let mut s = state_with(&[(1, "mob", status)]);
             s.selected = 0;
+            assert_eq!(s.handle_key(key('n')), allowed, "n on {status}");
+
+            let mut s = state_with(&[(1, "mob", status)]);
+            s.selected = 0;
             s.handle_key(key('m'));
             assert_eq!(s.reply.is_some(), allowed, "m opened an editor on {status}");
         }
@@ -608,9 +616,27 @@ mod tests {
         s.selected = 0;
         assert!(!s.can_reply_selected());
         assert!(!s.handle_key(key('y')));
+        assert!(!s.handle_key(key('n')));
         assert!(!s.handle_key(key('m')));
         assert!(s.reply.is_none());
         assert_eq!(s.agents[0].status, Status::Waiting);
+    }
+
+    /// `n` answers a question in the pane; `N` is the panel's own "new agent",
+    /// so one never triggers the other.
+    #[test]
+    fn lowercase_n_answers_and_shift_n_opens_a_new_agent() {
+        let mut s = state_with(&[(1, "mob", "waiting")]);
+        s.selected = 0;
+        assert!(s.handle_key(key('n')), "n answers a waiting row");
+        assert!(!s.hidden, "n must not open a pane");
+        assert_eq!(s.agents[0].status, Status::Working, "and it is a reply");
+
+        let mut s = state_with(&[(1, "mob", "waiting")]);
+        s.selected = 0;
+        assert!(s.handle_key(key('N')), "N is the panel action");
+        assert!(s.hidden, "N opens a new agent and hides the panel");
+        assert_eq!(s.agents[0].status, Status::Waiting, "N does not answer the row");
     }
 
     /// A dead session has no pane left to type into.

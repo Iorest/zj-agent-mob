@@ -129,10 +129,10 @@ when an agent session starts.
 | <kbd>a</kbd> / <kbd>r</kbd> | Approve / reject a parked tool or plan permission prompt |
 | <kbd>A</kbd> | Approve and add an allow rule |
 | <kbd>f</kbd> | Queue a follow-up for the end of the turn |
-| <kbd>y</kbd> / <kbd>m</kbd> | Answer a generic `question` notification waiting on pane input |
+| <kbd>y</kbd> / <kbd>n</kbd> / <kbd>m</kbd> | Answer a generic `question` notification waiting on pane input: yes, no, or a composed line |
 | <kbd>o</kbd> | Expand or collapse subagents |
 | <kbd>d</kbd> / <kbd>D</kbd> | Dismiss one or all `done` badges |
-| <kbd>n</kbd> | Open a new agent in a floating pane |
+| <kbd>N</kbd> | Open a new agent in a floating pane |
 | <kbd>t</kbd> | Open a floating login shell |
 | <kbd>q</kbd> / <kbd>Esc</kbd> | Hide the panel |
 

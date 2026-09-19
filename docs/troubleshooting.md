@@ -187,7 +187,7 @@ allow-only; the panel never writes an automatic deny.
 
 ## Reply does nothing
 
-<kbd>y</kbd>/<kbd>m</kbd> type the text into the agent's pane with
+<kbd>y</kbd>/<kbd>n</kbd>/<kbd>m</kbd> type into the agent's pane with
 `zellij --session <name> action write-chars`, so check:
 
 - `zellij` is on `PATH`: the plugin shells out to it, and a server started

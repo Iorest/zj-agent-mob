@@ -151,9 +151,9 @@ bound to the original `(session, pane_id)`.
 
 A timed-out hook prints no decision and returns control to the agent's own
 prompt. This is safer than leaving a turn blocked. The panel only offers
-<kbd>a</kbd>/<kbd>r</kbd>/<kbd>A</kbd> while the verdict is still live; <kbd>y</kbd>
-and <kbd>m</kbd> are reserved for a generic `question` notification and never
-write into a parked permission or plan prompt. The question reply is typed into
+<kbd>a</kbd>/<kbd>r</kbd>/<kbd>A</kbd> while the verdict is still live; <kbd>y</kbd>,
+<kbd>n</kbd>, and <kbd>m</kbd> are reserved for a generic `question` notification and
+never write into a parked permission or plan prompt. The question reply is typed into
 the agent's pane through `zellij --session <name> action write-chars`, the same
 command for a row in the panel's session and one in another: both transports go
 through `RunCommands`, so there is no local-only path that can be silently
@@ -212,7 +212,7 @@ subprocesses and relies on the five-second poll.
   host agent. Unsupported events simply produce no transition.
 - The plugin can answer permission decisions that the host agent accepts from a
   synchronous hook. Generic `question` notifications can receive best-effort
-  `y`/`m` pane input; plans and CodeBuddy MCP elicitation still require the
+  `y`/`n`/`m` pane input; plans and CodeBuddy MCP elicitation still require the
   agent's native pane/UI.
 - Zellij keeps loaded plugin instances in memory. Replacing a wasm file takes a
   new plugin instance, normally by starting a new session.

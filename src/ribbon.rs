@@ -44,6 +44,7 @@ pub(crate) const LIST_HINTS: &[Hint] = &[
 /// its pane appear only when there is a prompt there to answer.
 pub(crate) const REPLY_HINTS: &[Hint] = &[
     Hint::new("y", "yes"),
+    Hint::new("n", "no"),
     Hint::new("m", "message"),
     Hint::new("f", "queue"),
     Hint::new("\u{21b5}", "jump"),
