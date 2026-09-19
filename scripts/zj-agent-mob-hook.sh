@@ -10,6 +10,7 @@
 #   ZJ_AGENT_HEARTBEAT   0 disables PreToolUse/PostToolUse status refresh
 #   ZJ_AGENT_PLUGIN      override plugin path
 #   ZJ_AGENT_DEBUG       1 logs to ~/.cache/zj-agent-mob/hook.log
+#   ZJ_AGENT_SLOW_TOOL   seconds past which a tool duration is shown (default 10)
 #   ZJ_AGENT_APPROVE     0 disables answering permission prompts from the panel
 #   ZJ_AGENT_APPROVE_TIMEOUT  seconds to wait for a verdict (default 30)
 #   ZJ_AGENT_APPROVE_RULES    rules file for auto-answered prompts
@@ -18,6 +19,8 @@
 #   ZJ_AGENT_SPOOL       0 disables the cross-session status spool
 #   ZJ_AGENT_SPOOL_DIR   override spool location
 #   ZJ_AGENT_FANOUT      0 disables piping urgent transitions to other sessions
+#   ZJ_AGENT_PIPE_TIMEOUT  seconds to give one `zellij` call (default 0.5);
+#                        needs `timeout` or `gtimeout` to take effect
 
 # SC2154: event, session_id, cwd, transcript and tool_name are all assigned by
 # the `eval` of jq's @sh output below, which shellcheck cannot follow.

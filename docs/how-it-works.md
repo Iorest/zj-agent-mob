@@ -202,11 +202,13 @@ timing record. Turn boundaries may read a bounded transcript tail;
 rules file. Urgent cross-session fan-out runs only for `waiting`, `failed`,
 `idlewait`, and `done`.
 
-Each pipe is also bounded in time: the Python hook gives one `zellij pipe` half
-a second (`ZJ_AGENT_PIPE_TIMEOUT`) and then abandons it, because blocking an
-agent on the panel is worse than a stale row. Process startup on a loaded
-machine can exceed that, and then that one heartbeat is lost - the next event, or
-the panel's five-second poll of the spool, repairs the row.
+Each pipe is also bounded in time: both entry points give one `zellij` call half
+a second (`ZJ_AGENT_PIPE_TIMEOUT`) and then abandon it, because blocking an agent
+on the panel is worse than a stale row. The Python hook bounds it itself; the
+shell hook runs the call under `timeout`/`gtimeout`, and where neither exists it
+falls back to the unbounded call it always made. Process startup on a loaded
+machine can exceed the budget, and then that one heartbeat is lost - the next
+event, or the panel's five-second poll of the spool, repairs the row.
 
 `ZJ_AGENT_HEARTBEAT=0` skips per-tool and counter events, reducing hook volume
 but making mid-turn status less precise. `ZJ_AGENT_SPOOL=0` removes the spool
